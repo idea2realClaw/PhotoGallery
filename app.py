@@ -61,6 +61,7 @@ BASE_DIR = Path(__file__).resolve().parent
 GALLERY_FILE = BASE_DIR / "gallery.html"        # 默认生成位置（无法写入源目录时的回退）
 THUMBS_DIR = BASE_DIR / "thumbs"                 # 缩略图目录（回退模式用）
 GALLERY_ASSETS_DIR = BASE_DIR / "gallery_assets"  # 上传/无写权限时的回退工作目录
+FOLD_JSON = BASE_DIR / "fold.json"               # 记住最近扫描的目录，供下次启动/刷新 WebUI 预填
 HOME_URL = "http://127.0.0.1:2026/"
 
 # ---- 网络共享相关配置 ----
@@ -119,6 +120,31 @@ def _add_cors(resp):
     """本地工具：允许跨域（含 file:// 打开的 gallery.html）向 /api/event 上报日志。"""
     resp.headers["Access-Control-Allow-Origin"] = "*"
     return resp
+
+
+# --------------------------------------------------------------------------- #
+# 最近扫描目录的记忆（fold.json）
+# --------------------------------------------------------------------------- #
+def save_last_folder(path: str) -> None:
+    """把最近一次成功扫描的目录路径写入 fold.json，供下次启动/刷新 WebUI 预填文本框。"""
+    try:
+        FOLD_JSON.write_text(json.dumps({"folder": path}, ensure_ascii=False), encoding="utf-8")
+        log.info("BACKEND: 已把最近扫描目录写入 fold.json：%s", path)
+    except Exception as exc:
+        log.warning("BACKEND: 写入 fold.json 失败：%s", exc)
+
+
+def load_last_folder() -> str:
+    """读取 fold.json 中保存的最近目录；文件不存在/损坏/值非字符串则返回空串。"""
+    try:
+        if FOLD_JSON.exists():
+            data = json.loads(FOLD_JSON.read_text(encoding="utf-8"))
+            folder = data.get("folder", "")
+            if isinstance(folder, str):
+                return folder
+    except Exception:
+        pass
+    return ""
 
 
 # --------------------------------------------------------------------------- #
@@ -670,6 +696,10 @@ def generate():
     log.info("BACKEND: 画廊已通过 HTTP 共享：%s", share_url)
     log.info("BACKEND: 选中目录已通过 FTP 共享：%s", ftp_url)
 
+    # 记住最近扫描的目录，供下次启动/刷新 WebUI 预填文本框
+    if raw_path:
+        save_last_folder(raw_path)
+
     return jsonify(ok=True, path=str(out_html), count=len(photos), name=dir_name,
                    ftp_url=ftp_url, share_url=share_url)
 
@@ -698,6 +728,12 @@ def info():
     """返回本机局域网 IP 与共享端口，供前端在 WebUI 下方常驻展示共享链接。"""
     ip = LOCAL_IP or get_local_ip()
     return jsonify(ok=True, ip=ip, ftp_port=FTP_PORT, share_port=SHARE_HTTP_PORT)
+
+
+@app.route("/api/last-folder")
+def last_folder():
+    """返回 fold.json 中保存的最近扫描目录，供前端启动时预填文本框。"""
+    return jsonify(ok=True, folder=load_last_folder())
 
 
 # --------------------------------------------------------------------------- #

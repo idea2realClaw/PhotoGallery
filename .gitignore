@@ -18,6 +18,8 @@ gallery_assets/
 gallery.html
 # FTP 共享占位目录（运行时生成）
 ftp_share/
+# 最近扫描目录记忆（含本机绝对路径，机器相关，禁止上传）
+fold.json
 # 日志文件
 *.log
 

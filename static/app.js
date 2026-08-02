@@ -130,7 +130,21 @@ async function loadNetLinks() {
 els.copyNetFtp.addEventListener("click", () => copyText(els.copyNetFtp, els.netFtp.dataset.val || els.netFtp.textContent));
 els.copyNetHttp.addEventListener("click", () => copyText(els.copyNetHttp, els.netHttp.dataset.val || els.netHttp.textContent));
 
+// ---------- 启动时预填最近扫描的目录 ----------
+async function loadLastFolder() {
+  try {
+    const res = await fetch("/api/last-folder");
+    const data = await res.json();
+    const folder = (data && data.folder) || "";
+    if (folder) {
+      els.pathInput.value = folder;
+      reportEvent(`预填最近扫描目录：${folder}`);
+    }
+  } catch (_) { /* 获取失败不影响主流程 */ }
+}
+
 // ---------- Init ----------
 reportEvent("WebUI 首页已加载");
 connectLog();
 loadNetLinks();
+loadLastFolder();
