@@ -8,16 +8,22 @@ const els = {
   status: $("#status"),
   logbody: $("#logbody"),
   clearLog: $("#clearLog"),
+  loghead: $("#loghead"),
+  logFold: $("#logFold"),
   shareBox: $("#shareBox"),
   ftpUrl: $("#ftpUrl"),
   shareUrl: $("#shareUrl"),
   copyFtp: $("#copyFtp"),
+  browseFtp: $("#browseFtp"),
   copyShare: $("#copyShare"),
+  browseShare: $("#browseShare"),
   netLinks: $("#netLinks"),
   netFtp: $("#netFtp"),
   netHttp: $("#netHttp"),
   copyNetFtp: $("#copyNetFtp"),
+  browseNetFtp: $("#browseNetFtp"),
   copyNetHttp: $("#copyNetHttp"),
+  browseNetHttp: $("#browseNetHttp"),
 };
 
 // ---------- 前端事件上报 ----------
@@ -108,6 +114,16 @@ function copyText(btn, text) {
 els.copyFtp.addEventListener("click", () => copyText(els.copyFtp, els.ftpUrl.dataset.val || els.ftpUrl.textContent));
 els.copyShare.addEventListener("click", () => copyText(els.copyShare, els.shareUrl.dataset.val || els.shareUrl.textContent));
 
+// 浏览按钮：HTTP 直接打开网页；FTP 经 FTP 客户端以 HTTP 目录方式浏览
+function openBrowse(btn, url) {
+  reportEvent("用户点击浏览按钮：" + String(url).slice(0, 60));
+  window.open(url, "_blank");
+}
+els.browseFtp.addEventListener("click", () => openBrowse(els.browseFtp, "/ftp/browse"));
+els.browseNetFtp.addEventListener("click", () => openBrowse(els.browseNetFtp, "/ftp/browse"));
+els.browseShare.addEventListener("click", () => openBrowse(els.browseShare, els.shareUrl.dataset.val || els.shareUrl.textContent));
+els.browseNetHttp.addEventListener("click", () => openBrowse(els.browseNetHttp, els.netHttp.dataset.val || els.netHttp.textContent));
+
 // ---------- WebUI 下方常驻展示局域网共享地址（FTP / HTTP） ----------
 async function loadNetLinks() {
   try {
@@ -143,8 +159,28 @@ async function loadLastFolder() {
   } catch (_) { /* 获取失败不影响主流程 */ }
 }
 
+// ---------- 日志面板折叠（缺省折叠，localStorage 记忆） ----------
+const LOG_FOLD_KEY = "pg_log_collapsed";
+function applyLogFold(collapsed) {
+  els.logbody.hidden = collapsed;
+  els.logFold.textContent = collapsed ? "展开 ▾" : "折叠 ▴";
+}
+function toggleLog() {
+  const collapsed = !els.logbody.hidden;
+  applyLogFold(collapsed);
+  localStorage.setItem(LOG_FOLD_KEY, collapsed ? "1" : "0");
+  reportEvent(collapsed ? "用户折叠日志" : "用户展开日志");
+}
+els.logFold.addEventListener("click", (e) => { e.stopPropagation(); toggleLog(); });
+els.loghead.addEventListener("click", (e) => {
+  if (e.target.closest("#clearLog")) return; // 清空按钮不触发折叠
+  toggleLog();
+});
+
 // ---------- Init ----------
 reportEvent("WebUI 首页已加载");
 connectLog();
 loadNetLinks();
 loadLastFolder();
+// 缺省折叠（仅当 localStorage 显式为 "0" 时才默认展开）
+applyLogFold(localStorage.getItem(LOG_FOLD_KEY) !== "0");

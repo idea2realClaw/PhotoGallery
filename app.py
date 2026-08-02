@@ -37,7 +37,12 @@ import logging
 import socket
 import threading
 import webbrowser
+import ftplib
+import zipfile
+import tempfile
 import concurrent.futures
+from html import escape as _html_escape
+from urllib.parse import quote as _url_quote
 from pathlib import Path
 
 from flask import (
@@ -811,6 +816,345 @@ def share_files(filename="gallery.html"):
     if not target.exists():
         return f"文件不存在：{filename}", 404
     return send_from_directory(str(SHARED_DIR), filename)
+
+
+# --------------------------------------------------------------------------- #
+# 局域网共享：FTP 客户端（以 HTTP 方式浏览 / 下载 FTP 共享目录）
+# --------------------------------------------------------------------------- #
+def _ftp_client():
+    """新建一个连到本机 FTP 服务的匿名客户端（只读，目录已随生成时切换）。"""
+    ftp = ftplib.FTP()
+    ftp.connect("127.0.0.1", FTP_PORT)
+    ftp.login()  # 匿名
+    return ftp
+
+
+def _ftp_list_dir(rel: str):
+    """列出 FTP 共享目录 rel 下的条目，返回 [(name, is_dir, size), ...]。
+    目录优先、再按名称排序。rel 以 '/' 开头（FTP 服务已 chroot 到共享目录）。"""
+    if not rel.startswith("/"):
+        rel = "/" + rel
+    ftp = _ftp_client()
+    try:
+        entries = []
+        try:
+            for name, facts in ftp.mlsd(rel):
+                if name in (".", ".."):
+                    continue
+                is_dir = facts.get("type") == "dir"
+                try:
+                    size = int(facts.get("size") or 0)
+                except (TypeError, ValueError):
+                    size = 0
+                entries.append((name, is_dir, size))
+        except ftplib.error_perm:
+            # 个别服务器不支持 MLSD，回退到 NLST（只有名字，无类型/大小）
+            for name in ftp.nlst(rel):
+                if name not in (".", ".."):
+                    entries.append((name, False, 0))
+        entries.sort(key=lambda e: (not e[1], e[0].lower()))
+        return entries
+    finally:
+        try:
+            ftp.quit()
+        except Exception:
+            pass
+
+
+def _fmt_size(n: int) -> str:
+    if not n or n <= 0:
+        return "—"
+    for unit in ("B", "KB", "MB", "GB", "TB"):
+        if n < 1024:
+            return f"{n:.0f} {unit}" if unit == "B" else f"{n:.1f} {unit}"
+        n /= 1024
+    return f"{n:.1f} PB"
+
+
+def _ftp_file_stat(rel: str):
+    """确认 rel 是 FTP 共享目录下的一个文件，返回其大小（int，可能为 0）；
+    不存在或为目录则返回 None。优先用 MLSD（避免 SIZE 命令在 ASCII 模式下被拒的兼容问题）。"""
+    if not rel.startswith("/"):
+        rel = "/" + rel
+    parent = rel.rstrip("/").rsplit("/", 1)[0] or "/"
+    name = rel.rstrip("/").split("/")[-1]
+    ftp = _ftp_client()
+    try:
+        try:
+            for n, facts in ftp.mlsd(parent):
+                if n == name:
+                    try:
+                        return int(facts.get("size") or 0)
+                    except (TypeError, ValueError):
+                        return 0
+        except ftplib.error_perm:
+            # 退回 NLST 仅确认是否存在（无大小信息）
+            if name in ftp.nlst(parent):
+                return 0
+    finally:
+        try:
+            ftp.quit()
+        except Exception:
+            pass
+    return None
+
+
+def _ftp_collect_files(rel: str):
+    """递归收集 rel 目录下所有文件的 FTP 相对路径（含子目录），返回列表。"""
+    if not rel.startswith("/"):
+        rel = "/" + rel
+    result = []
+    stack = [rel]
+    while stack:
+        cur = stack.pop()
+        for name, is_dir, _ in _ftp_list_dir(cur):
+            full = cur.rstrip("/") + "/" + name
+            if is_dir:
+                stack.append(full)
+            else:
+                result.append(full)
+    return result
+
+
+def _build_zip(rel: str) -> str:
+    """把 rel 目录（含子目录）整体递归下载并打包成 zip，返回临时文件路径（调用方负责删除）。
+    使用 zf.open 流式写入以控制内存占用；用单个 FTP 连接顺序下载所有文件。"""
+    if not rel.startswith("/"):
+        rel = "/" + rel
+    tmp = tempfile.NamedTemporaryFile(prefix="pg_ftp_zip_", suffix=".zip", delete=False)
+    tmp.close()
+    base = rel.strip("/")
+    ftp = _ftp_client()
+    try:
+        with zipfile.ZipFile(tmp.name, "w", zipfile.ZIP_DEFLATED) as zf:
+            for fpath in _ftp_collect_files(rel):
+                arcname = fpath.lstrip("/")
+                if base and arcname.startswith(base + "/"):
+                    arcname = arcname[len(base) + 1:]
+                with zf.open(arcname, "w", force_zip64=True) as dst:
+                    ftp.retrbinary("RETR " + fpath, dst.write, blocksize=65536)
+    finally:
+        try:
+            ftp.quit()
+        except Exception:
+            pass
+    return tmp.name
+
+
+def _send_and_remove(path: str, filename: str):
+    """流式返回临时 zip 文件，请求结束（流耗尽）后删除临时文件。"""
+    try:
+        with open(path, "rb") as f:
+            while True:
+                chunk = f.read(65536)
+                if not chunk:
+                    break
+                yield chunk
+    finally:
+        try:
+            os.remove(path)
+        except Exception:
+            pass
+
+
+@app.route("/ftp/zip")
+def ftp_zip():
+    """把 FTP 共享目录（rel）整体打包成 ZIP 供下载（递归包含全部子目录与文件）。"""
+    if not _HAS_FTP or ftp_server is None:
+        return "FTP 服务未启用，无法打包下载。", 503
+    if SHARED_DIR is None:
+        return "尚未生成画廊，FTP 未共享目录，无法打包下载。", 404
+    rel = request.args.get("path", "/") or "/"
+    if not rel.startswith("/"):
+        rel = "/" + rel
+    # 先确认目录存在，避免进入耗时的打包流程才报错
+    try:
+        _ftp_list_dir(rel)
+    except Exception as exc:
+        log.warning("BACKEND: FTP 打包目录不存在：%s", exc)
+        return f"目录不存在或无法访问：{rel}", 404
+    dl_name = rel.strip("/").replace("/", "_") or "gallery"
+    try:
+        zpath = _build_zip(rel)
+    except Exception as exc:
+        log.warning("BACKEND: FTP 打包失败：%s", exc)
+        return f"打包失败：{exc}", 500
+    log.info("BACKEND: FTP 整目录打包下载：%s -> %s.zip", rel, dl_name)
+    return Response(
+        _send_and_remove(zpath, dl_name + ".zip"),
+        mimetype="application/zip",
+        headers={"Content-Disposition": f'attachment; filename="{_html_escape(dl_name)}.zip"'},
+    )
+
+
+def _ftp_browse_html(rel: str, entries, crumbs: list) -> str:
+    """把 FTP 目录条目渲染成自包含的 HTTP 目录浏览页（可浏览子目录、可下载文件）。"""
+    root = "/ftp/browse"
+    rows = []
+    if rel != "/":
+        parent = rel.rstrip("/").rsplit("/", 1)[0] or "/"
+        rows.append(
+            f'<li class="up"><a href="{root}?path={_url_quote(parent)}">⬆️ 返回上级目录</a></li>'
+        )
+    for name, is_dir, size in entries:
+        full = rel.rstrip("/") + "/" + name
+        if is_dir:
+            rows.append(
+                f'<li class="dir"><a href="{root}?path={_url_quote(full)}">📁 {_html_escape(name)}</a></li>'
+            )
+        else:
+            view = f"/ftp/file?path={_url_quote(full)}&dl=0"
+            down = f"/ftp/file?path={_url_quote(full)}&dl=1"
+            rows.append(
+                f'<li class="file">'
+                f'<span class="nm"><a href="{view}" target="_blank">{_html_escape(name)}</a></span>'
+                f'<span class="sz">{_fmt_size(size)}</span>'
+                f'<a class="dl" href="{down}">⬇️ 下载</a></li>'
+            )
+    crumb_html = f'<a href="{root}?path=/">根目录</a>'
+    for cname, cpath in crumbs:
+        crumb_html += f' / <a href="{root}?path={_url_quote(cpath)}">{_html_escape(cname)}</a>'
+
+    body = "\n".join(rows) if rows else '<li class="empty">（空目录）</li>'
+    html = f"""<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>PhotoGallery · FTP 浏览</title>
+<style>
+  * {{ box-sizing: border-box; margin: 0; padding: 0; }}
+  body {{ font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
+    "Microsoft YaHei", sans-serif; background: #f5f6f8; color: #1f2430; min-height: 100vh; }}
+  header {{ position: sticky; top: 0; z-index: 10; padding: 14px 22px; background: #fff;
+    border-bottom: 1px solid #e6e8ee; }}
+  .title {{ font-weight: 700; font-size: 18px; }}
+  .title small {{ color: #8a90a2; font-weight: 500; margin-left: 8px; font-size: 13px; }}
+  .crumbs {{ margin-top: 8px; font-size: 13px; color: #3b6cff; word-break: break-all; }}
+  .crumbs a {{ color: #3b6cff; text-decoration: none; }}
+  .crumbs a:hover {{ text-decoration: underline; }}
+  main {{ padding: 18px 22px; }}
+  ul.listing {{ list-style: none; background: #fff; border: 1px solid #e6e8ee;
+    border-radius: 12px; overflow: hidden; }}
+  ul.listing li {{ display: flex; align-items: center; gap: 12px; padding: 11px 14px;
+    border-bottom: 1px solid #eef0f5; }}
+  ul.listing li:last-child {{ border-bottom: none; }}
+  ul.listing li.up {{ background: #f0f4ff; }}
+  ul.listing li.empty {{ color: #8a90a2; justify-content: center; }}
+  ul.listing .nm {{ flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }}
+  ul.listing .nm a {{ color: #1f2430; text-decoration: none; }}
+  ul.listing .nm a:hover {{ color: #3b6cff; text-decoration: underline; }}
+  ul.listing .sz {{ color: #8a90a2; font-size: 13px; min-width: 90px; text-align: right; }}
+  ul.listing .dl {{ color: #3b6cff; font-size: 13px; text-decoration: none;
+    border: 1px solid #3b6cff; border-radius: 8px; padding: 4px 10px; }}
+  ul.listing .dl:hover {{ background: #3b6cff; color: #fff; }}
+  .tip {{ color: #8a90a2; font-size: 13px; margin-top: 12px; }}
+  .dlall {{ margin-bottom: 14px; }}
+  .dlall .btn {{ display: inline-block; background: #3b6cff; color: #fff; text-decoration: none;
+    font-size: 14px; font-weight: 600; padding: 9px 16px; border-radius: 9px; }}
+  .dlall .btn:hover {{ background: #2f57d6; }}
+</style>
+</head>
+<body>
+  <header>
+    <div class="title">PhotoGallery<small>FTP 目录浏览（通过 FTP 客户端以 HTTP 方式呈现）</small></div>
+    <div class="crumbs">位置：{crumb_html}</div>
+  </header>
+  <main>
+    <div class="dlall"><a class="btn" href="/ftp/zip?path={_url_quote(rel)}">📦 下载整个目录（打包 ZIP）</a></div>
+    <ul class="listing">
+{body}
+    </ul>
+    <p class="tip">点击文件名可在新标签内联查看（图片/文档），点击「下载」按钮保存到本机；文件夹可继续进入；上方按钮可把当前目录（含子目录）整体打包下载。</p>
+  </main>
+</body>
+</html>
+"""
+    return html
+
+
+@app.route("/ftp/browse")
+def ftp_browse():
+    """用 FTP 客户端连接本机 FTP 服务，把共享目录以 HTTP 目录页形式呈现，可浏览与下载。"""
+    if not _HAS_FTP or ftp_server is None:
+        return "FTP 服务未启用，无法浏览。请先安装 pyftpdlib。", 503
+    if SHARED_DIR is None:
+        return "尚未生成画廊，FTP 未共享任何目录，无法浏览。请先在 WebUI 选择目录并生成。", 404
+    rel = request.args.get("path", "/") or "/"
+    if not rel.startswith("/"):
+        rel = "/" + rel
+    try:
+        entries = _ftp_list_dir(rel)
+    except Exception as exc:
+        log.warning("BACKEND: FTP 浏览失败：%s", exc)
+        return f"FTP 浏览失败：{exc}", 500
+    parts = [p for p in rel.split("/") if p]
+    crumbs = []
+    acc = ""
+    for p in parts:
+        acc += "/" + p
+        crumbs.append((p, acc))
+    log.info("BACKEND: FTP 浏览目录：%s（%d 个条目）", rel, len(entries))
+    return _ftp_browse_html(rel, entries, crumbs)
+
+
+@app.route("/ftp/file")
+def ftp_file():
+    """用 FTP 客户端把 FTP 共享文件经 HTTP 流式下载：图片/文档内联预览，其他文件强制下载。"""
+    if not _HAS_FTP or ftp_server is None:
+        return "FTP 服务未启用，无法下载。", 503
+    if SHARED_DIR is None:
+        return "尚未生成画廊，FTP 未共享目录，无法下载。", 404
+    rel = request.args.get("path", "") or ""
+    if not rel:
+        return "缺少 path 参数。", 400
+    if not rel.startswith("/"):
+        rel = "/" + rel
+    dl = request.args.get("dl") == "1"
+    fname = rel.rstrip("/").split("/")[-1]
+    ext = Path(fname).suffix.lower()
+    mime = MIME_BY_EXT.get(ext, "application/octet-stream")
+
+    ftp = _ftp_client()
+    # 先确认文件存在/可访问（失败直接 404，避免已经开始流式传输才报错）
+    size = _ftp_file_stat(rel)
+    if size is None:
+        try:
+            ftp.quit()
+        except Exception:
+            pass
+        return f"文件不存在或无法访问：{rel}", 404
+
+    q: "queue.Queue[bytes]" = queue.Queue(maxsize=30)
+    err = {}
+
+    def producer():
+        try:
+            ftp.retrbinary("RETR " + rel, lambda c: q.put(c), blocksize=65536)
+        except Exception as e:  # 传输中断等
+            err["e"] = e
+        finally:
+            q.put(None)
+
+    def gen():
+        t = threading.Thread(target=producer, daemon=True)
+        t.start()
+        while True:
+            chunk = q.get()
+            if chunk is None:
+                break
+            yield chunk
+        try:
+            ftp.quit()
+        except Exception:
+            pass
+
+    headers = {}
+    # 非浏览器可直接预览的类型，或明确点「下载」时，强制以附件形式保存
+    if dl or mime == "application/octet-stream":
+        headers["Content-Disposition"] = f'attachment; filename="{_html_escape(fname)}"'
+    log.info("BACKEND: FTP 下载（经 HTTP 中转）：%s mime=%s dl=%s", rel, mime, dl)
+    return Response(gen(), mimetype=mime, headers=headers)
 
 
 if __name__ == "__main__":

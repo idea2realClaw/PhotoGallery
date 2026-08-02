@@ -119,11 +119,13 @@ main.home {
   box-shadow: var(--shadow);
 }
 .loghead {
-  display: flex; align-items: center; justify-content: space-between;
+  display: flex; align-items: center; gap: 8px;
   padding: 10px 16px; color: #c7cde0; font-size: 13px;
   background: #161c30; border-bottom: 1px solid #232a44;
+  cursor: pointer; user-select: none;
 }
-.loghead .btn { background: #232a44; color: #c7cde0; border-color: #2f3758; }
+.loghead .logtitle { flex: 1; }
+.loghead .btn { background: #232a44; color: #c7cde0; border-color: #2f3758; cursor: pointer; }
 .loghead .btn:hover { background: #2f3758; }
 .logbody {
   height: 300px; overflow-y: auto;
@@ -131,5 +133,6 @@ main.home {
   font-family: "SF Mono", Menlo, Consolas, monospace;
   font-size: 12.5px; line-height: 1.7; color: #b7c0d8;
 }
+.logbody[hidden] { display: none; }
 .logline { white-space: pre-wrap; word-break: break-all; }
 .logline:nth-child(odd) { color: #9aa6c6; }
