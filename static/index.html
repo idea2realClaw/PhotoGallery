@@ -1,0 +1,67 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>PhotoGallery · 欢迎</title>
+  <link rel="stylesheet" href="/static/style.css" />
+</head>
+<body>
+  <main class="home">
+    <div class="hero">
+      <div class="logo">🖼️</div>
+      <h1>欢迎使用PhotoGallery</h1>
+      <p class="sub">输入本地目录的完整路径，后台会扫描其中的照片并生成画廊页面，完成后自动打开。</p>
+
+      <div class="scanrow">
+        <input type="text" id="pathInput" placeholder="请输入服务器可访问的完整目录路径，例如 /Users/zhuxiaodong/Pictures" autocomplete="off" />
+        <button class="btn primary" id="scanBtn">扫描并生成</button>
+      </div>
+
+      <div class="status" id="status">就绪，请输入目录完整路径后点击「扫描并生成」。</div>
+
+      <section class="sharebox" id="shareBox" hidden>
+        <h3>🌐 已共享给网络中的其他用户</h3>
+        <div class="share-row">
+          <span class="lbl">FTP 下载（选中目录）：</span>
+          <code id="ftpUrl"></code>
+          <button class="btn tiny" id="copyFtp" type="button">复制</button>
+        </div>
+        <div class="share-row">
+          <span class="lbl">HTTP 画廊（gallery.html）：</span>
+          <code id="shareUrl"></code>
+          <button class="btn tiny" id="copyShare" type="button">复制</button>
+        </div>
+        <p class="hint info">FTP 为匿名只读，其他用户用 FTP 客户端连接上面的地址即可取走原图；用浏览器打开 HTTP 地址即可查看画廊。</p>
+      </section>
+    </div>
+
+    <section class="netlinks" id="netLinks" hidden>
+      <h3>🔗 网络共享地址（局域网其他用户可用）</h3>
+      <div class="share-row">
+        <span class="lbl">FTP：</span>
+        <a id="netFtp" href="#" target="_blank"></a>
+        <span class="note">（匿名登录，下载原图）</span>
+        <button class="btn tiny" id="copyNetFtp" type="button">复制</button>
+      </div>
+      <div class="share-row">
+        <span class="lbl">HTTP：</span>
+        <a id="netHttp" href="#" target="_blank"></a>
+        <span class="note">（看画廊）</span>
+        <button class="btn tiny" id="copyNetHttp" type="button">复制</button>
+      </div>
+      <p class="hint info">以上地址中的 IP 为当前本机局域网地址，其他用户需与本机处于同一局域网内访问；HTTP 画廊链接需先生成 gallery.html 后才有效。</p>
+    </section>
+
+    <section class="logpanel">
+      <div class="loghead">
+        <span>📜 后台实时日志（前端事件 + 后台进展）</span>
+        <button class="btn tiny" id="clearLog">清空</button>
+      </div>
+      <div class="logbody" id="logbody"></div>
+    </section>
+  </main>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>

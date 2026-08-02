@@ -1,0 +1,27 @@
+# ===== macOS 垃圾文件 =====
+.DS_Store
+
+# ===== Python 缓存 =====
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.venv/
+venv/
+
+# ===== 隐私 / 运行时生成的产物（禁止上传） =====
+# 缩略图：由源照片生成，含用户私人照片
+thumbs/
+# 原图副本：无写权限回退模式下会把用户原图复制到这里，属隐私
+gallery_assets/
+# 生成的画廊页面（含本地绝对路径，且依赖本地缩略图/原图）
+gallery.html
+# FTP 共享占位目录（运行时生成）
+ftp_share/
+# 日志文件
+*.log
+
+# ===== 编辑器 / IDE =====
+.idea/
+.vscode/
+*.swp

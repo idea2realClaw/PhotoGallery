@@ -1,0 +1,135 @@
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+:root {
+  --bg: #f5f6f8;
+  --panel: #ffffff;
+  --ink: #1f2430;
+  --muted: #8a90a2;
+  --line: #e6e8ee;
+  --primary: #3b6cff;
+  --primary-ink: #ffffff;
+  --shadow: 0 6px 20px rgba(20, 30, 60, 0.08);
+}
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
+    "Microsoft YaHei", sans-serif;
+  background: var(--bg);
+  color: var(--ink);
+  min-height: 100vh;
+}
+
+main.home {
+  max-width: 920px;
+  margin: 0 auto;
+  padding: 48px 24px 64px;
+}
+
+/* Hero */
+.hero {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 18px;
+  box-shadow: var(--shadow);
+  padding: 40px 28px;
+  text-align: center;
+}
+.hero .logo { font-size: 52px; }
+.hero h1 { font-size: 28px; margin: 14px 0 10px; letter-spacing: .5px; }
+.hero .sub { color: var(--muted); font-size: 15px; line-height: 1.6; max-width: 560px; margin: 0 auto 26px; }
+
+.btn {
+  border: 1px solid var(--line);
+  background: #fff;
+  color: var(--ink);
+  padding: 8px 14px;
+  border-radius: 9px;
+  font-size: 14px;
+  cursor: pointer;
+  transition: .15s;
+}
+.btn:hover { border-color: #c9cdd8; }
+.btn.primary { background: var(--primary); color: var(--primary-ink); border-color: var(--primary); }
+.btn.primary:hover { filter: brightness(1.05); }
+.btn.big { font-size: 17px; padding: 14px 30px; border-radius: 12px; }
+.btn.tiny { font-size: 12px; padding: 4px 10px; }
+
+/* Scan row (选好的目录填入此框，点“扫描并生成”) */
+.scanrow {
+  display: flex; gap: 8px; margin-top: 18px; justify-content: center;
+}
+.scanrow input {
+  flex: 1; max-width: 520px; padding: 10px 12px;
+  border: 1px solid var(--line); border-radius: 9px; font-size: 14px; outline: none;
+}
+.scanrow input:focus { border-color: var(--primary); }
+
+/* Status + progress */
+.status {
+  margin-top: 22px; font-size: 14px; color: var(--ink);
+  min-height: 20px; line-height: 1.5;
+}
+
+/* 首页能力提示 */
+.hint { font-size: 13px; min-height: 18px; margin: 6px auto 0; max-width: 620px; line-height: 1.5; color: var(--muted); }
+.hint.ok { color: #1f9d55; }
+.hint.warn { color: #c47f00; }
+.hint.info { color: #3b6cff; }
+.progress {
+  margin: 12px auto 0; max-width: 460px;
+  height: 8px; background: #eef0f5; border-radius: 99px; overflow: hidden;
+}
+.progress .bar { height: 100%; width: 0%; background: var(--primary); transition: width .2s; }
+
+/* 共享信息区块（生成后显示 FTP/HTTP 地址） */
+.sharebox {
+  margin: 24px auto 0; text-align: left; max-width: 640px;
+  background: #f5f8ff; border: 1px solid #cfe0ff; border-radius: 12px; padding: 16px 18px;
+}
+.sharebox h3 { margin: 0 0 10px; font-size: 15px; color: #244; }
+.sharebox .share-row { display: flex; align-items: center; gap: 8px; margin: 8px 0; flex-wrap: wrap; }
+.sharebox .lbl { font-size: 13px; color: var(--muted); white-space: nowrap; }
+.sharebox code {
+  flex: 1; min-width: 180px; font-size: 13px; padding: 6px 9px; background: #fff;
+  border: 1px solid #d6e2ff; border-radius: 7px; color: #1a3a8f; word-break: break-all;
+}
+
+/* 网络共享链接（常驻，WebUI 下方、日志上方） */
+.netlinks {
+  margin: 24px auto 0; text-align: left; max-width: 640px;
+  background: #f4fff7; border: 1px solid #bfe9cf; border-radius: 12px; padding: 16px 18px;
+}
+.netlinks h3 { margin: 0 0 10px; font-size: 15px; color: #1f5f3a; }
+.netlinks .share-row { display: flex; align-items: center; gap: 8px; margin: 8px 0; flex-wrap: wrap; }
+.netlinks .lbl { font-size: 13px; color: var(--muted); white-space: nowrap; }
+.netlinks .note { font-size: 12px; color: var(--muted); }
+.netlinks a {
+  flex: 1; min-width: 180px; font-size: 13px; padding: 6px 9px; background: #fff;
+  border: 1px solid #c4e8d4; border-radius: 7px; color: #155f37; word-break: break-all;
+  text-decoration: none;
+}
+.netlinks a:hover { text-decoration: underline; background: #eafff2; }
+
+/* Log panel */
+.logpanel {
+  margin-top: 36px;
+  background: #0f1423;
+  border-radius: 14px;
+  overflow: hidden;
+  box-shadow: var(--shadow);
+}
+.loghead {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 10px 16px; color: #c7cde0; font-size: 13px;
+  background: #161c30; border-bottom: 1px solid #232a44;
+}
+.loghead .btn { background: #232a44; color: #c7cde0; border-color: #2f3758; }
+.loghead .btn:hover { background: #2f3758; }
+.logbody {
+  height: 300px; overflow-y: auto;
+  padding: 12px 16px;
+  font-family: "SF Mono", Menlo, Consolas, monospace;
+  font-size: 12.5px; line-height: 1.7; color: #b7c0d8;
+}
+.logline { white-space: pre-wrap; word-break: break-all; }
+.logline:nth-child(odd) { color: #9aa6c6; }
