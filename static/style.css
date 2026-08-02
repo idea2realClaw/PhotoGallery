@@ -110,6 +110,14 @@ main.home {
 }
 .netlinks a:hover { text-decoration: underline; background: #eafff2; }
 
+/* 人脸整理区块 */
+.facesearch {
+  margin: 24px auto 0; text-align: left; max-width: 640px;
+  background: #fff7fb; border: 1px solid #f0cfe2; border-radius: 12px; padding: 16px 18px;
+}
+.facesearch h3 { margin: 0 0 10px; font-size: 15px; color: #8a2d6b; }
+.facesearch .btn.primary { display: inline-block; margin-top: 6px; text-decoration: none; }
+
 /* Log panel */
 .logpanel {
   margin-top: 36px;

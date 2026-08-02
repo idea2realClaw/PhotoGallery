@@ -20,6 +20,9 @@ gallery.html
 ftp_share/
 # 最近扫描目录记忆（含本机绝对路径，机器相关，禁止上传）
 fold.json
+# 人脸索引：含生物特征与人脸裁剪图（由源照片生成，禁止上传）
+faces/
+faces.json
 # 日志文件
 *.log
 

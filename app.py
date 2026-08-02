@@ -53,6 +53,8 @@ from flask import (
     send_from_directory,
 )
 from PIL import Image
+import time
+import numpy as np
 
 try:
     from pyftpdlib.authorizers import DummyAuthorizer
@@ -68,6 +70,12 @@ THUMBS_DIR = BASE_DIR / "thumbs"                 # 缩略图目录（回退模�
 GALLERY_ASSETS_DIR = BASE_DIR / "gallery_assets"  # 上传/无写权限时的回退工作目录
 FOLD_JSON = BASE_DIR / "fold.json"               # 记住最近扫描的目录，供下次启动/刷新 WebUI 预填
 HOME_URL = "http://127.0.0.1:2026/"
+
+# ---- 人脸索引相关配置 ----
+FACES_DIR = BASE_DIR / "faces"               # 人脸裁剪图目录（由人脸索引生成，含隐私，已 gitignore）
+FACES_JSON = BASE_DIR / "faces.json"         # 人脸数据库（聚类结果 + 标签，已 gitignore）
+FACE_DET_SIZE = (640, 640)                   # 检测器输入尺寸
+FACE_MATCH_THRESH = 0.4                       # ArcFace 余弦相似度聚类阈值（同人阈值，越大越严格）
 
 # ---- 网络共享相关配置 ----
 FTP_PORT = 2121          # FTP 服务端口（匿名只读，共享选中目录）
@@ -695,6 +703,17 @@ def generate():
     # 共享给网络其他客户：切换 FTP 共享目录，并记录 HTTP 共享地址
     share_dir = out_html.parent
     update_ftp_share(share_dir)
+
+    # 后台构建人脸索引（检测 + 聚类），不阻塞前台工作
+    try:
+        threading.Thread(
+            target=build_face_index,
+            args=(root, photos, share_dir, copy_mode),
+            daemon=True,
+        ).start()
+        log.info("BACKEND: 已在后台启动人脸索引构建（检测 + 聚类）")
+    except Exception as exc:
+        log.warning("BACKEND: 启动人脸索引线程失败：%s", exc)
     ip = get_local_ip()
     ftp_url = f"ftp://{ip}:{FTP_PORT}"
     share_url = f"http://{ip}:{SHARE_HTTP_PORT}/share/gallery.html"
@@ -816,6 +835,399 @@ def share_files(filename="gallery.html"):
     if not target.exists():
         return f"文件不存在：{filename}", 404
     return send_from_directory(str(SHARED_DIR), filename)
+
+
+# --------------------------------------------------------------------------- #
+# 人脸索引：扫描完成后在后台检测/识别/聚类，建立人脸数据库与可检索的 WebUI
+# --------------------------------------------------------------------------- #
+FACE_INDEX = {
+    "running": False, "ready": False,
+    "faces": 0, "clusters": 0, "error": "",
+}
+
+
+def get_face_app():
+    """懒加载 insightface FaceAnalysis（buffalo_l：SCRFD 检测 + ArcFace 512 维识别）。
+    只构建一次（线程安全），后续复用。"""
+    global _face_app
+    if _face_app is None:
+        with _face_app_lock:
+            if _face_app is None:
+                try:
+                    from insightface.app import FaceAnalysis
+                except Exception as exc:
+                    raise RuntimeError(f"未安装 insightface：{exc}")
+                a = FaceAnalysis(name="buffalo_l")
+                a.prepare(ctx_id=-1, det_size=FACE_DET_SIZE)  # CPU 推理
+                _face_app = a
+                log.info("BACKEND: 人脸模型 buffalo_l 已加载")
+    return _face_app
+
+
+_face_app = None
+_face_app_lock = threading.Lock()
+
+
+def _analysis_image(photo: dict, root: Path, asset_dir: Path, copy_mode: bool):
+    """为一张照片挑选最适合做人脸检测/识别的图像（BGR numpy），优先用原图，
+    失败回退到预览图/缩略图。原图过大时缩放到最长边 <=1280 以提速且不影响识别。"""
+    if copy_mode:
+        candidates = [asset_dir / photo["orig"]]
+    else:
+        candidates = [root / photo["name"]]
+    if photo.get("view"):
+        candidates.append(asset_dir / photo["view"])
+    candidates.append(asset_dir / photo["thumb"])
+    for p in candidates:
+        try:
+            if not p.exists():
+                continue
+            with Image.open(p) as im:
+                im = im.convert("RGB")
+                w, h = im.size
+                long = max(w, h)
+                if long > 1280:
+                    s = 1280.0 / long
+                    im = im.resize((max(1, int(w * s)), max(1, int(h * s))))
+                return np.asarray(im)[..., ::-1].copy()  # RGB -> BGR
+        except Exception:
+            continue
+    return None
+
+
+def cluster_faces(embs, thresh):
+    """用余弦相似度阈值做贪心聚类：每张脸与之前最相似的脸比较，
+    若 >= 阈值则归入同一聚类，否则新建聚类。返回 [[face_id,...], ...]。"""
+    n = len(embs)
+    if n == 0:
+        return []
+    E = np.stack(embs)  # n x 512（已 L2 归一化）
+    assign = [-1] * n
+    next_c = 0
+    for i in range(n):
+        if i > 0:
+            sims = E[:i] @ E[i]  # 与之前所有脸的余弦相似度
+            j = int(np.argmax(sims))
+            if sims[j] >= thresh:
+                assign[i] = assign[j]
+                continue
+        assign[i] = next_c
+        next_c += 1
+    groups = {}
+    for i, a in enumerate(assign):
+        groups.setdefault(a, []).append(i)
+    return list(groups.values())
+
+
+def build_face_index(root: Path, photos: list, asset_dir: Path, copy_mode: bool) -> None:
+    """后台线程入口：对每张照片检测人脸、裁剪、提取特征，再聚类，
+    结果写入 faces.json（聚类 + 标签），人脸裁剪图写入 faces/。"""
+    FACE_INDEX["running"] = True
+    FACE_INDEX["ready"] = False
+    FACE_INDEX["faces"] = 0
+    FACE_INDEX["clusters"] = 0
+    FACE_INDEX["error"] = ""
+    try:
+        fa = get_face_app()
+        FACES_DIR.mkdir(parents=True, exist_ok=True)
+        faces = []
+        embeddings = []
+        fid = 0
+        for photo in photos:
+            img = _analysis_image(photo, root, asset_dir, copy_mode)
+            if img is None:
+                continue
+            try:
+                dets = fa.get(img)
+            except Exception as exc:
+                log.warning("BACKEND: 人脸检测失败 %s：%s", photo["name"], exc)
+                continue
+            for d in dets:
+                try:
+                    emb = np.asarray(d.embedding, dtype=np.float32)
+                    nrm = np.linalg.norm(emb)
+                    if nrm <= 0:
+                        continue
+                    emb = emb / nrm
+                    x1, y1, x2, y2 = [int(v) for v in d.bbox]
+                    ih, iw = img.shape[:2]
+                    mw, mh = (x2 - x1), (y2 - y1)
+                    x1 = max(0, int(x1 - 0.2 * mw)); y1 = max(0, int(y1 - 0.2 * mh))
+                    x2 = min(iw, int(x2 + 0.2 * mw)); y2 = min(ih, int(y2 + 0.2 * mh))
+                    if x2 <= x1 or y2 <= y1:
+                        continue
+                    crop = img[y1:y2, x1:x2]
+                    if crop.size == 0:
+                        continue
+                    crop_pil = Image.fromarray(crop[..., ::-1]).resize((112, 112))
+                    cpath = FACES_DIR / f"face_{fid}.jpg"
+                    crop_pil.save(cpath, "JPEG", quality=90)
+                    faces.append({
+                        "id": fid, "photo": photo["name"],
+                        "bbox": [x1, y1, x2 - x1, y2 - y1],
+                        "crop": f"faces/face_{fid}.jpg",
+                        "score": round(float(d.det_score), 3),
+                        "cluster": -1,
+                    })
+                    embeddings.append(emb)
+                    fid += 1
+                except Exception as exc:
+                    log.warning("BACKEND: 单张人脸处理失败：%s", exc)
+        FACE_INDEX["faces"] = fid
+        log.info("BACKEND: 人脸检测完成，共 %d 张人脸（来自 %d 张照片）", fid, len(photos))
+
+        groups = cluster_faces(embeddings, FACE_MATCH_THRESH)
+        cdict = {}
+        for ci, members in enumerate(groups):
+            rep = max(members, key=lambda i: faces[i]["score"])
+            cdict[str(ci)] = {"label": "", "rep": rep, "count": len(members)}
+            for i in members:
+                faces[i]["cluster"] = ci
+        FACE_INDEX["clusters"] = len(groups)
+        data = {
+            "version": 1,
+            "root": str(root),
+            "generated_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+            "photos": photos,
+            "faces": faces,
+            "clusters": cdict,
+        }
+        FACES_JSON.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+        FACE_INDEX["ready"] = True
+        log.info("BACKEND: 人脸聚类完成，共 %d 个聚类（人物）", len(groups))
+    except Exception as exc:
+        FACE_INDEX["error"] = str(exc)
+        log.exception("BACKEND: 人脸索引构建失败：%s", exc)
+    finally:
+        FACE_INDEX["running"] = False
+
+
+def load_faces():
+    """读取 faces.json；不存在/损坏返回 None。"""
+    try:
+        if FACES_JSON.exists():
+            return json.loads(FACES_JSON.read_text(encoding="utf-8"))
+    except Exception:
+        pass
+    return None
+
+
+@app.route("/api/faces/status")
+def faces_status():
+    """返回人脸索引构建进度（前端按钮可据此提示）。"""
+    return jsonify(ok=True, **FACE_INDEX)
+
+
+@app.route("/api/faces/clusters")
+def faces_clusters():
+    """返回聚类列表（每个聚类含 pid、标签、代表脸图片地址、照片数）。"""
+    d = load_faces()
+    if not d:
+        return jsonify(ok=False, reason="no-index")
+    faces = d["faces"]
+    clusters = []
+    for cid, c in d["clusters"].items():
+        rep = c.get("rep")
+        rep_url = ("/faces/face/" + str(rep)) if (isinstance(rep, int) and 0 <= rep < len(faces)) else None
+        clusters.append({
+            "pid": int(cid), "label": c.get("label", ""),
+            "count": c.get("count", 0), "rep_face_url": rep_url,
+        })
+    clusters.sort(key=lambda x: x["pid"])
+    return jsonify(ok=True, clusters=clusters, faces=len(faces), root=d.get("root", ""))
+
+
+@app.route("/faces/face/<int:fid>")
+def face_image(fid):
+    """返回某张人脸裁剪图。"""
+    p = FACES_DIR / f"face_{fid}.jpg"
+    if not p.exists():
+        return "404", 404
+    return send_from_directory(str(FACES_DIR), f"face_{fid}.jpg")
+
+
+@app.route("/api/faces/label", methods=["POST"])
+def faces_label():
+    """保存某个聚类（人物）的可编辑标签。"""
+    js = request.get_json(silent=True) or {}
+    pid = js.get("pid")
+    label = str(js.get("label", ""))
+    d = load_faces()
+    if not d:
+        return jsonify(ok=False, reason="no-index"), 404
+    key = str(pid)
+    if key not in d["clusters"]:
+        return jsonify(ok=False, reason="bad-pid"), 404
+    d["clusters"][key]["label"] = label
+    try:
+        FACES_JSON.write_text(json.dumps(d, ensure_ascii=False), encoding="utf-8")
+        return jsonify(ok=True)
+    except Exception as exc:
+        return jsonify(ok=False, reason=str(exc)), 500
+
+
+def _faces_webui_html() -> str:
+    """人脸寻找 WebUI：列出按聚类分组的人脸（代表脸 + 可编辑标签 + 查看链接）。"""
+    return """<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>PhotoGallery · 人脸寻找</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+    background: #f5f6f8; color: #1f2430; min-height: 100vh; }
+  header { position: sticky; top: 0; z-index: 10; display: flex; align-items: center; justify-content: space-between;
+    gap: 16px; padding: 14px 22px; background: #fff; border-bottom: 1px solid #e6e8ee; }
+  .title { font-weight: 700; font-size: 18px; }
+  .title small { color: #8a90a2; font-weight: 500; margin-left: 8px; font-size: 13px; }
+  .home-btn { border: 1px solid #3b6cff; background: #3b6cff; color: #fff; padding: 9px 16px; border-radius: 9px;
+    font-size: 14px; cursor: pointer; text-decoration: none; display: inline-block; }
+  .home-btn:hover { filter: brightness(1.06); }
+  main { padding: 24px; }
+  .hint { color: #8a90a2; font-size: 13px; margin-bottom: 16px; }
+  .status-banner { background: #eef2ff; border: 1px solid #cfd8ff; color: #2f57d6; padding: 14px 16px;
+    border-radius: 10px; font-size: 14px; margin-bottom: 16px; }
+  .grid { display: grid; gap: 16px; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); }
+  .card { background: #fff; border: 1px solid #e6e8ee; border-radius: 12px; overflow: hidden;
+    box-shadow: 0 6px 20px rgba(20,30,60,.08); display: flex; flex-direction: column; }
+  .card img { width: 100%; aspect-ratio: 1/1; object-fit: cover; background: #eef0f5; display: block;
+    cursor: pointer; transition: transform .12s; }
+  .card img:hover { transform: scale(1.03); }
+  .card .label { width: 100%; border: none; border-top: 1px solid #eef0f5; padding: 8px 10px; font-size: 13px;
+    outline: none; color: #1f2430; }
+  .card .label:focus { background: #f4f7ff; }
+  .card .meta { padding: 6px 10px 4px; font-size: 12px; color: #8a90a2; display: flex; justify-content: space-between; }
+  .card .view { display: block; text-align: center; padding: 8px 10px; font-size: 13px; color: #3b6cff;
+    text-decoration: none; border-top: 1px solid #eef0f5; }
+  .card .view:hover { background: #eef2ff; }
+  .saved { color: #1fa971 !important; }
+  .empty { color: #8a90a2; text-align: center; padding: 80px 20px; }
+</style>
+</head>
+<body>
+  <header>
+    <div class="title">PhotoGallery<small>人脸寻找 · 按人物归类</small></div>
+    <a class="home-btn" href="/">← 返回主页</a>
+  </header>
+  <main>
+    <p class="hint">每张代表脸是该人物的一个人脸；下方标签可点击编辑（如姓名），回车或失焦自动保存。点击人脸或「查看所有照片」打开该人物的全部照片。</p>
+    <div id="banner" class="status-banner" hidden></div>
+    <div class="grid" id="grid"></div>
+    <p class="empty" id="empty" hidden>尚未建立人脸索引。请先在首页输入目录并「扫描并生成」。</p>
+  </main>
+  <script>
+    const grid = document.getElementById('grid');
+    const banner = document.getElementById('banner');
+    const empty = document.getElementById('empty');
+
+    function showBanner(text) { banner.textContent = text; banner.hidden = false; }
+    function hideBanner() { banner.hidden = true; }
+
+    function renderClusters(clusters) {
+      grid.innerHTML = '';
+      if (!clusters.length) { empty.hidden = false; return; }
+      empty.hidden = true;
+      for (const c of clusters) {
+        const card = document.createElement('div');
+        card.className = 'card';
+        const img = document.createElement('img');
+        img.src = c.rep_face_url || '';
+        img.alt = c.label || ('人物 ' + c.pid);
+        img.addEventListener('click', function () { window.open('/faces/person/' + c.pid, '_blank'); });
+        const label = document.createElement('input');
+        label.className = 'label';
+        label.value = c.label || '';
+        label.placeholder = '人物 ' + c.pid;
+        label.dataset.pid = c.pid;
+        const meta = document.createElement('div');
+        meta.className = 'meta';
+        meta.innerHTML = '<span>#' + c.pid + '</span><span>' + c.count + ' 张</span>';
+        const view = document.createElement('a');
+        view.className = 'view';
+        view.textContent = '查看所有照片 →';
+        view.href = '/faces/person/' + c.pid;
+        view.target = '_blank';
+        function save() {
+          const v = label.value;
+          fetch('/api/faces/label', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ pid: c.pid, label: v }) })
+            .then(function (r) { return r.json(); })
+            .then(function (j) {
+              if (j.ok) { label.classList.add('saved'); setTimeout(function () { label.classList.remove('saved'); }, 800); }
+            });
+        }
+        label.addEventListener('change', save);
+        label.addEventListener('keydown', function (e) { if (e.key === 'Enter') { label.blur(); } });
+        card.appendChild(img); card.appendChild(label); card.appendChild(meta); card.appendChild(view);
+        grid.appendChild(card);
+      }
+    }
+
+    function loadClusters() {
+      fetch('/api/faces/clusters').then(function (r) { return r.json(); }).then(function (j) {
+        if (j.ok) { hideBanner(); renderClusters(j.clusters); }
+        else { pollStatus(); }
+      }).catch(function () { pollStatus(); });
+    }
+
+    function pollStatus() {
+      fetch('/api/faces/status').then(function (r) { return r.json(); }).then(function (s) {
+        if (s.ready) { loadClusters(); }
+        else if (s.running) { showBanner('⏳ 正在后台建立人脸索引（已检测 ' + s.faces + ' 张人脸，聚类 ' + s.clusters + ' 组）…'); setTimeout(pollStatus, 1500); }
+        else if (s.error) { showBanner('人脸索引构建失败：' + s.error); }
+        else { empty.hidden = false; showBanner('尚未建立人脸索引。请先在首页输入目录并「扫描并生成」。'); }
+      }).catch(function () { showBanner('无法连接后端，请确认 PhotoGallery 正在运行。'); });
+    }
+
+    pollStatus();
+  </script>
+</body>
+</html>
+"""
+
+
+@app.route("/faces")
+def faces_webui():
+    """人脸寻找入口页。"""
+    return _faces_webui_html()
+
+
+@app.route("/faces/person/<int:pid>")
+def faces_person(pid):
+    """该人物（聚类）的所有照片画廊，复用 build_gallery_html 的灯箱体验。"""
+    d = load_faces()
+    if not d:
+        return "尚未建立人脸索引，请先扫描目录生成画廊。", 404
+    c = d["clusters"].get(str(pid))
+    if not c:
+        return "未找到该人物。", 404
+    member_faces = [f for f in d["faces"] if f.get("cluster") == pid]
+    seen = set()
+    names = []
+    for f in member_faces:
+        if f["photo"] not in seen:
+            seen.add(f["photo"])
+            names.append(f["photo"])
+    photos_map = {p["name"]: p for p in d.get("photos", [])}
+    sub = [photos_map[n] for n in names if n in photos_map]
+    label = c.get("label") or f"人物 {pid}"
+    # 把相对路径改成 /share/ 绝对路径（该页不在 /share 下）
+    def _abs(p):
+        return "/share/" + p if p and not p.startswith("/") else p
+    sub2 = [{
+        "name": p["name"],
+        "thumb": _abs(p["thumb"]),
+        "orig": _abs(p["orig"]),
+        "view": _abs(p.get("view", p["orig"])),
+        "full": p.get("full", p["name"]),
+    } for p in sub]
+    html = build_gallery_html(f"{label}（{len(sub2)} 张）", sub2)
+    # 把画廊页的「返回主页」改成「返回人脸」（HOME_URL 在 build_gallery_html 中已被替换为真实地址）
+    html = html.replace(f'class="home-btn" href="{HOME_URL}"', 'class="home-btn" href="/faces"')
+    html = html.replace("← 返回主页", "← 返回人脸")
+    return html
 
 
 # --------------------------------------------------------------------------- #
