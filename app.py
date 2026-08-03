@@ -1033,7 +1033,8 @@ def faces_clusters():
             "pid": int(cid), "label": c.get("label", ""),
             "count": c.get("count", 0), "rep_face_url": rep_url,
         })
-    clusters.sort(key=lambda x: x["pid"])
+    # 按出现次数（count）降序排列，次数相同则按 pid 升序保持稳定，避免刷新时顺序抖动
+    clusters.sort(key=lambda x: (-x["count"], x["pid"]))
     return jsonify(ok=True, clusters=clusters, faces=len(faces), root=d.get("root", ""))
 
 
