@@ -1,0 +1,6 @@
+# Windows batch files MUST use CRLF, or cmd.exe mis-parses them
+# (symptom: "'<text>:' is not recognized as an internal or external command").
+*.bat text eol=crlf
+
+# macOS launch script must stay LF for the bash shebang to work.
+*.command text eol=lf
