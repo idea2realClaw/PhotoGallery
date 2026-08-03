@@ -1136,7 +1136,10 @@ def _faces_webui_html() -> str:
         const img = document.createElement('img');
         img.src = c.rep_face_url || '';
         img.alt = c.label || ('人物 ' + c.pid);
-        img.addEventListener('click', function () { window.open('/faces/person/' + c.pid, '_blank'); });
+        img.addEventListener('click', function () {
+          const w = window.open('/faces/person/' + c.pid, '_blank');
+          if (!w) window.location.href = '/faces/person/' + c.pid;
+        });
         const label = document.createElement('input');
         label.className = 'label';
         label.value = c.label || '';
@@ -1149,7 +1152,11 @@ def _faces_webui_html() -> str:
         view.className = 'view';
         view.textContent = '查看所有照片 →';
         view.href = '/faces/person/' + c.pid;
-        view.target = '_blank';
+        view.addEventListener('click', function (e) {
+          e.preventDefault();
+          const w = window.open('/faces/person/' + c.pid, '_blank');
+          if (!w) window.location.href = '/faces/person/' + c.pid;
+        });
         function save() {
           const v = label.value;
           fetch('/api/faces/label', { method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -1167,14 +1174,14 @@ def _faces_webui_html() -> str:
     }
 
     function loadClusters() {
-      fetch('/api/faces/clusters').then(function (r) { return r.json(); }).then(function (j) {
+      fetch('/api/faces/clusters', { cache: 'no-store' }).then(function (r) { return r.json(); }).then(function (j) {
         if (j.ok) { hideBanner(); renderClusters(j.clusters); }
         else { pollStatus(); }
       }).catch(function () { pollStatus(); });
     }
 
     function pollStatus() {
-      fetch('/api/faces/status').then(function (r) { return r.json(); }).then(function (s) {
+      fetch('/api/faces/status', { cache: 'no-store' }).then(function (r) { return r.json(); }).then(function (s) {
         if (s.ready) { loadClusters(); }
         else if (s.running) { showBanner('⏳ 正在后台建立人脸索引（已检测 ' + s.faces + ' 张人脸，聚类 ' + s.clusters + ' 组）…'); setTimeout(pollStatus, 1500); }
         else if (s.error) { showBanner('人脸索引构建失败：' + s.error); }

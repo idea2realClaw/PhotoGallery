@@ -25,6 +25,7 @@ const els = {
   copyNetHttp: $("#copyNetHttp"),
   browseNetHttp: $("#browseNetHttp"),
   healthBanner: $("#healthBanner"),
+  faceSearch: $("#faceSearch"),
 };
 
 // ---------- 前端事件上报 ----------
@@ -225,5 +226,13 @@ loadNetLinks();
 loadLastFolder();
 checkHealth();                 // 页面加载即探活，后台没起立刻提示
 setInterval(checkHealth, 15000); // 每 15 秒复查后台连通性
+// 人脸寻找：尝试新标签打开，被拦截（沙箱/弹窗拦截器）则当前标签兜底
+if (els.faceSearch) {
+  els.faceSearch.addEventListener("click", (e) => {
+    e.preventDefault();
+    const w = window.open("/faces", "_blank");
+    if (!w) window.location.href = "/faces";
+  });
+}
 // 缺省折叠（仅当 localStorage 显式为 "0" 时才默认展开）
 applyLogFold(localStorage.getItem(LOG_FOLD_KEY) !== "0");
