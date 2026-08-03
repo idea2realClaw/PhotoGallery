@@ -22,7 +22,7 @@ body {
 main.home {
   max-width: 920px;
   margin: 0 auto;
-  padding: 48px 24px 64px;
+  padding: 24px 24px 64px;
 }
 
 /* Hero */
@@ -36,7 +36,6 @@ main.home {
 }
 .hero .logo { font-size: 46px; }
 .hero h1 { font-size: 26px; margin: 10px 0 8px; letter-spacing: .5px; }
-.hero .dirhint { margin-top: 10px; }
 
 .btn {
   border: 1px solid var(--line);
