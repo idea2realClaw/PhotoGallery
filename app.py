@@ -382,7 +382,10 @@ def build_gallery_html(dir_name: str, photos: list) -> str:
 <body>
   <header>
     <div class="title">PhotoGallery<small>{dir_name} · {len(photos)} 张照片</small></div>
-    <a class="home-btn" href="{HOME_URL}">← 返回主页</a>
+    <div style="display:flex; gap:10px; align-items:center;">
+      <a class="home-btn" href="{HOME_URL}faces" style="background:#fff; color:#3b6cff; border-color:#3b6cff;">🧑 人脸寻找</a>
+      <a class="home-btn" href="{HOME_URL}">← 返回主页</a>
+    </div>
   </header>
   <main>
     <p class="gridhint">点击下方任意缩略图可查看（先看缩略图，放大时才加载原图；右键先加载原图再弹「下载原图」菜单；← → 切换、Esc 关闭；文件名含完整目录路径）。</p>
@@ -605,6 +608,7 @@ def generate():
     js = request.get_json(silent=True) or {}
     dir_name = strip_quotes(request.form.get("dirName") or js.get("dirName") or "")
     raw_path = strip_quotes(request.form.get("path") or js.get("path") or "")
+    log.info("BACKEND: /api/generate 收到请求，dir_name=%r，raw_path=%r", dir_name, raw_path)
 
     photos = []
 
@@ -728,6 +732,7 @@ def generate():
     update_ftp_share(share_dir)
 
     # 后台构建人脸索引（检测 + 聚类），不阻塞前台工作
+    log.info("BACKEND: 准备后台构建人脸索引（照片数=%d，copy_mode=%s，share_dir=%s）", len(photos), copy_mode, share_dir)
     try:
         threading.Thread(
             target=build_face_index,
@@ -873,10 +878,12 @@ def get_face_app():
     """懒加载 insightface FaceAnalysis（buffalo_l：SCRFD 检测 + ArcFace 512 维识别）。
     只构建一次（线程安全），后续复用。"""
     global _face_app
+    log.info("BACKEND: [人脸索引] get_face_app() 被调用")
     if _face_app is None:
         with _face_app_lock:
             if _face_app is None:
                 try:
+                    log.info("BACKEND: [人脸索引] 导入 insightface.app.FaceAnalysis ...")
                     from insightface.app import FaceAnalysis
                 except Exception as exc:
                     raise RuntimeError(f"未安装 insightface：{exc}")
@@ -1011,8 +1018,11 @@ def build_face_index(root: Path, photos: list, asset_dir: Path, copy_mode: bool)
     FACE_INDEX["faces"] = 0
     FACE_INDEX["clusters"] = 0
     FACE_INDEX["error"] = ""
+    log.info("BACKEND: [人脸索引] 进入构建线程，目录=%s，待处理照片=%d 张，copy_mode=%s", root, len(photos), copy_mode)
     try:
+        log.info("BACKEND: [人脸索引] 正在加载 insightface 人脸模型（buffalo_l）...")
         fa = get_face_app()
+        log.info("BACKEND: [人脸索引] insightface 模型已就绪，开始逐张检测人脸")
         FACES_DIR.mkdir(parents=True, exist_ok=True)
         cache = _load_face_cache()
         old = load_faces() or {}
@@ -1297,7 +1307,7 @@ def _faces_webui_html() -> str:
 <body>
   <header>
     <div class="title">PhotoGallery<small>人脸寻找 · 按人物归类</small></div>
-    <a class="home-btn" href="/">← 返回主页</a>
+    <a class="home-btn" href="/share/gallery.html">← 返回画廊</a>
   </header>
   <main>
     <p class="hint">每张代表脸是该人物的一个人脸；下方标签可点击编辑（如姓名），回车或失焦自动保存。点击人脸或「查看所有照片」打开该人物的全部照片。</p>
@@ -1401,12 +1411,14 @@ def _faces_webui_html() -> str:
 @app.route("/faces")
 def faces_webui():
     """人脸寻找入口页。"""
+    log.info("BACKEND: 收到 GET /faces 请求（人脸寻找入口页）")
     return _faces_webui_html()
 
 
 @app.route("/faces/person/<int:pid>")
 def faces_person(pid):
     """该人物（聚类）的所有照片画廊 + 全部人脸缩略图（可手动设封面），复用 build_gallery_html 灯箱。"""
+    log.info("BACKEND: 收到 GET /faces/person/%d 请求", pid)
     d = load_faces()
     if not d:
         return "尚未建立人脸索引，请先扫描目录生成画廊。", 404
@@ -1821,7 +1833,7 @@ if __name__ == "__main__":
     setup_logging()
     LOCAL_IP = get_local_ip()   # 启动即获取本机局域网 IP
     log.info("BACKEND: 本机局域网 IP：%s", LOCAL_IP)
-    log.info("BACKEND: PhotoGallery 启动，监听端口 2026，首页 %s", HOME_URL)
+    log.info("BACKEND: PhotoGallery 启动，监听端口 2026，首页 %s，人脸寻找页 http://127.0.0.1:2026/faces", HOME_URL)
     init_ftp_server()
     log.info("BACKEND: 等待用户通过 WebUI 选择目录 ...")
     app.run(host="0.0.0.0", port=2026, debug=False, threaded=True)
