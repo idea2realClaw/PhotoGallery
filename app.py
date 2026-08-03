@@ -591,11 +591,20 @@ def frontend_event():
     return jsonify(ok=True)
 
 
+def strip_quotes(s: str) -> str:
+    """去掉 shell 风格的外层引号（"..." 或 '...'，含两端空白）。
+    用户常把含空格的目录路径用引号包起来粘贴，直接建 Path 会带引号导致解析失败。"""
+    s = (s or "").strip()
+    if len(s) >= 2 and s[0] == s[-1] and s[0] in ('"', "'"):
+        s = s[1:-1].strip()
+    return s
+
+
 @app.route("/api/generate", methods=["POST"])
 def generate():
     js = request.get_json(silent=True) or {}
-    dir_name = (request.form.get("dirName") or js.get("dirName") or "").strip()
-    raw_path = (request.form.get("path") or js.get("path") or "").strip()
+    dir_name = strip_quotes(request.form.get("dirName") or js.get("dirName") or "")
+    raw_path = strip_quotes(request.form.get("path") or js.get("path") or "")
 
     photos = []
 
