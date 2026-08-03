@@ -52,7 +52,7 @@ from flask import (
     Response,
     send_from_directory,
 )
-from PIL import Image
+from PIL import Image, ImageOps
 Image.MAX_IMAGE_PIXELS = None  # 允许超大图解码（我们自行缩放），避免 DecompressionBomb 警告中断处理
 import time
 import numpy as np
@@ -192,6 +192,7 @@ def save_thumb_file(data: bytes, dest_dir: Path, thumb_name: str) -> str:
     返回缩略图文件名（供网格显示）。"""
     dest_dir.mkdir(parents=True, exist_ok=True)
     with Image.open(io.BytesIO(data)) as img:
+        img = ImageOps.exif_transpose(img)  # 按 EXIF Orientation 旋转，避免手机竖拍图被横置
         img = img.convert("RGB")
         w, h = img.size
         # 超大图先按 1/2 逐级缩小，减少解码内存与处理开销
@@ -249,6 +250,7 @@ def save_preview_file(data: bytes, dest_dir: Path, preview_name: str) -> str:
     上限 2000px 长边、质量 90，避免超大原图拖慢浏览器渲染。"""
     dest_dir.mkdir(parents=True, exist_ok=True)
     with Image.open(io.BytesIO(data)) as img:
+        img = ImageOps.exif_transpose(img)  # 按 EXIF Orientation 旋转，避免手机竖拍图被横置
         img = img.convert("RGB")
         w, h = img.size
         # 超大图先按 1/2 逐级缩小，减少解码内存与处理开销
@@ -914,6 +916,7 @@ def _analysis_image(photo: dict, root: Path, asset_dir: Path, copy_mode: bool):
             if not p.exists():
                 continue
             with Image.open(p) as im:
+                im = ImageOps.exif_transpose(im)  # 人脸检测也需按 EXIF 方向，否则在横置图上误检
                 im = im.convert("RGB")
                 w, h = im.size
                 long = max(w, h)
