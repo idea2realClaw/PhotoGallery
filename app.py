@@ -187,6 +187,11 @@ def orig_filename(rel_name: str) -> str:
     return f"{_rel_hash(rel_name)}_{stem}{ext}"
 
 
+# 缩略图构建签名：当缩略图/方向处理逻辑改变时（如加入 EXIF Orientation 旋转），
+# 递增此值可让下次扫描强制重建所有缩略图，避免旧（方向错误）缩略图被增量缓存复用。
+THUMB_BUILD = "2"
+
+
 def save_thumb_file(data: bytes, dest_dir: Path, thumb_name: str) -> str:
     """把图片字节缩放成缩略图，写入 dest_dir/thumb_name（dest_dir 即 <根>/thumbs），
     返回缩略图文件名（供网格显示）。"""
@@ -641,6 +646,16 @@ def generate():
             thumbs_dir = workdir / "thumbs"
             copy_mode = True
             log.info("BACKEND: 源目录无写权限，回退到工作目录 %s（原图会暂存一份）", workdir)
+        # 构建签名：缩略图逻辑变更后强制重建，避免旧缩略图被增量缓存复用
+        marker = thumbs_dir / ".thumb_build.txt"
+        force_thumb = False
+        try:
+            if marker.read_text(encoding="utf-8").strip() != THUMB_BUILD:
+                force_thumb = True
+        except OSError:
+            force_thumb = True
+        if force_thumb:
+            log.info("BACKEND: 缩略图构建签名变化，本次扫描将强制重建全部缩略图（解决方向/质量更新）")
         log.info("BACKEND: 开始扫描目录「%s」，共 %d 张图片（增量 + 并行生成：已复用缓存的将跳过）", dir_name, total)
 
         # 第一遍（快速、串行）：只判断每张图需要生成哪些产物，避免重复读取/编码
@@ -648,7 +663,7 @@ def generate():
         for img_path in images:
             rel = str(img_path.relative_to(root))
             tname = thumb_filename(rel)
-            thumb_ok = not source_changed(img_path, thumbs_dir / tname)
+            thumb_ok = False if force_thumb else not source_changed(img_path, thumbs_dir / tname)
             if copy_mode:
                 oname = orig_filename(rel)
                 orig_ok = not source_changed(img_path, out_html.parent / oname)
@@ -707,6 +722,13 @@ def generate():
         if skipped:
             log.info("BACKEND: 跳过 %d 张未改动的图片（缩略图/副本/预览已复用），实际新生成 %d 张",
                      skipped, total - skipped)
+        # 缩略图构建签名：本次若因签名变化强制重建，则写入新签名，后续扫描恢复增量
+        if force_thumb:
+            try:
+                marker.write_text(THUMB_BUILD, encoding="utf-8")
+                log.info("BACKEND: 已写入缩略图构建签名 %s", THUMB_BUILD)
+            except OSError as exc:
+                log.warning("BACKEND: 写入缩略图构建签名失败：%s", exc)
     else:
         log.warning("BACKEND: /api/generate 未收到任何图片或路径")
         return jsonify({"error": "请提供图片或目录路径"}), 400
@@ -1286,6 +1308,7 @@ def _faces_webui_html() -> str:
   .home-btn { border: 1px solid #3b6cff; background: #3b6cff; color: #fff; padding: 9px 16px; border-radius: 9px;
     font-size: 14px; cursor: pointer; text-decoration: none; display: inline-block; }
   .home-btn:hover { filter: brightness(1.06); }
+  .gallery-btn { background: #fff; color: #3b6cff; border-color: #3b6cff; font-weight: 600; }
   main { padding: 24px; }
   .hint { color: #8a90a2; font-size: 13px; margin-bottom: 16px; }
   .status-banner { background: #eef2ff; border: 1px solid #cfd8ff; color: #2f57d6; padding: 14px 16px;
@@ -1310,7 +1333,8 @@ def _faces_webui_html() -> str:
 <body>
   <header>
     <div class="title">PhotoGallery<small>人脸寻找 · 按人物归类</small></div>
-    <a class="home-btn" href="/share/gallery.html">← 返回画廊</a>
+    <a class="home-btn gallery-btn" href="/share/gallery.html">🖼 浏览 Gallery</a>
+    <a class="home-btn" href="/">← 返回主页</a>
   </header>
   <main>
     <p class="hint">每张代表脸是该人物的一个人脸；下方标签可点击编辑（如姓名），回车或失焦自动保存。点击人脸或「查看所有照片」打开该人物的全部照片。</p>
