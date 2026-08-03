@@ -24,6 +24,7 @@ const els = {
   browseNetFtp: $("#browseNetFtp"),
   copyNetHttp: $("#copyNetHttp"),
   browseNetHttp: $("#browseNetHttp"),
+  healthBanner: $("#healthBanner"),
 };
 
 // ---------- 前端事件上报 ----------
@@ -35,6 +36,28 @@ async function reportEvent(message) {
       body: JSON.stringify({ message }),
     });
   } catch (_) { /* 日志上报失败不影响主流程 */ }
+}
+
+// ---------- 后台健康检查 ----------
+async function pingHealth() {
+  try {
+    const res = await fetch("/api/health", { cache: "no-store" });
+    return res.ok;
+  } catch (_) {
+    return false;
+  }
+}
+function showHealthBanner(show) {
+  if (els.healthBanner) els.healthBanner.hidden = !show;
+}
+async function checkHealth() {
+  const ok = await pingHealth();
+  showHealthBanner(!ok);
+  if (els.scanBtn) {
+    els.scanBtn.disabled = !ok;
+    els.scanBtn.title = ok ? "" : "后台未连接，请先运行启动器（start.command / python app.py）并刷新页面";
+  }
+  return ok;
 }
 
 // ---------- 实时日志（SSE） ----------
@@ -70,11 +93,21 @@ els.pathInput.addEventListener("change", () => {
 async function scanByPath(path) {
   els.status.textContent = `正在通知后台扫描：${path} …`;
   reportEvent(`用户提交路径：${path}（服务器绝对路径），后台开始扫描`);
+  // 先快速探活：后台没启动就直接提示，避免无谓等待与“连不上”的困惑
+  if (!(await pingHealth())) {
+    showHealthBanner(true);
+    els.status.textContent = "❌ 后台未连接：请先运行启动器（start.command / python app.py）并刷新页面。";
+    reportEvent("扫描前健康检查失败：后台未启动");
+    return;
+  }
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 10 * 60 * 1000); // 10 分钟超时保护
   try {
     const res = await fetch("/api/generate", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ path, dirName: "" }),
+      signal: controller.signal,
     });
     const data = await res.json();
     if (res.ok && data.ok) {
@@ -86,8 +119,16 @@ async function scanByPath(path) {
       reportEvent("扫描失败：" + (data.error || "未知错误"));
     }
   } catch (err) {
-    els.status.textContent = "❌ 无法连接后台。";
-    reportEvent("扫描时网络错误");
+    if (err && err.name === "AbortError") {
+      els.status.textContent = "⏳ 后台仍在处理中（目录可能较大）。请查看下方日志，处理完成后画廊会自动打开。";
+      reportEvent("扫描请求超时（后台仍在处理）");
+    } else {
+      showHealthBanner(true);
+      els.status.textContent = "❌ 无法连接后台：请确认启动器仍在运行，并刷新页面后重试。";
+      reportEvent("扫描时网络错误");
+    }
+  } finally {
+    clearTimeout(timer);
   }
 }
 
@@ -182,5 +223,7 @@ reportEvent("WebUI 首页已加载");
 connectLog();
 loadNetLinks();
 loadLastFolder();
+checkHealth();                 // 页面加载即探活，后台没起立刻提示
+setInterval(checkHealth, 15000); // 每 15 秒复查后台连通性
 // 缺省折叠（仅当 localStorage 显式为 "0" 时才默认展开）
 applyLogFold(localStorage.getItem(LOG_FOLD_KEY) !== "0");

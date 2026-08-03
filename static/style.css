@@ -69,6 +69,28 @@ main.home {
   min-height: 20px; line-height: 1.5;
 }
 
+/* 后台健康横幅：连不上后台时醒目提示 */
+.health-banner {
+  display: block;
+  margin: 0 0 18px;
+  padding: 12px 16px;
+  background: #fff3f3;
+  border: 1px solid #ffb4b4;
+  color: #c0392b;
+  border-radius: 12px;
+  font-size: 14px;
+  line-height: 1.6;
+  text-align: center;
+}
+.health-banner code {
+  background: #ffe3e3;
+  padding: 1px 6px;
+  border-radius: 5px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 13px;
+}
+[hidden] { display: none !important; }
+
 /* 首页能力提示 */
 .hint { font-size: 13px; min-height: 18px; margin: 6px auto 0; max-width: 620px; line-height: 1.5; color: var(--muted); }
 .hint.ok { color: #1f9d55; }
