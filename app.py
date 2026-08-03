@@ -121,6 +121,15 @@ def setup_logging() -> None:
     sh = logging.StreamHandler(sys.stdout)
     sh.setFormatter(fmt)
     root.addHandler(sh)
+    # 同时写日志文件，便于窗口关闭后回看（含去引号 / 强制重建等诊断信息）
+    try:
+        _log_file = Path(__file__).resolve().parent / "photogallery.log"
+        fh = logging.FileHandler(_log_file, encoding="utf-8")
+        fh.setFormatter(fmt)
+        root.addHandler(fh)
+        logging.getLogger("photogallery").info("日志文件：%s", _log_file)
+    except OSError:
+        pass
     qh = _QueueHandler()
     qh.setFormatter(fmt)
     root.addHandler(qh)
@@ -189,7 +198,7 @@ def orig_filename(rel_name: str) -> str:
 
 # 缩略图构建签名：当缩略图/方向处理逻辑改变时（如加入 EXIF Orientation 旋转），
 # 递增此值可让下次扫描强制重建所有缩略图，避免旧（方向错误）缩略图被增量缓存复用。
-THUMB_BUILD = "2"
+THUMB_BUILD = "3"
 
 
 def save_thumb_file(data: bytes, dest_dir: Path, thumb_name: str) -> str:
@@ -602,20 +611,35 @@ def frontend_event():
 
 
 def strip_quotes(s: str) -> str:
-    """去掉 shell 风格的外层引号（"..." 或 '...'，含两端空白）。
+    """去掉路径两端的所有引号字符（ASCII 与常见中文引号），可处理多层嵌套/混合。
     用户常把含空格的目录路径用引号包起来粘贴，直接建 Path 会带引号导致解析失败。"""
     s = (s or "").strip()
-    if len(s) >= 2 and s[0] == s[-1] and s[0] in ('"', "'"):
-        s = s[1:-1].strip()
+    QUOTE_OPEN = ('"', "'", "\u201c", "\u2018", "`")
+    QUOTE_CLOSE = ('"', "'", "\u201d", "\u2019", "`")
+    PAIRS = {('"', '"'), ("'", "'"), ("\u201c", "\u201d"),
+             ("\u2018", "\u2019"), ("`", "`")}
+    changed = True
+    while changed:
+        changed = False
+        if (len(s) >= 2 and s[0] in QUOTE_OPEN and s[-1] in QUOTE_CLOSE
+                and (s[0] == s[-1] or (s[0], s[-1]) in PAIRS)):
+            s = s[1:-1].strip()
+            changed = True
     return s
 
 
 @app.route("/api/generate", methods=["POST"])
 def generate():
     js = request.get_json(silent=True) or {}
-    dir_name = strip_quotes(request.form.get("dirName") or js.get("dirName") or "")
-    raw_path = strip_quotes(request.form.get("path") or js.get("path") or "")
-    log.info("BACKEND: /api/generate 收到请求，dir_name=%r，raw_path=%r", dir_name, raw_path)
+    raw_dir = request.form.get("dirName") or js.get("dirName") or ""
+    raw_path_form = request.form.get("path") or js.get("path") or ""
+    dir_name = strip_quotes(raw_dir)
+    raw_path = strip_quotes(raw_path_form)
+    log.info("BACKEND: /api/generate 收到原始输入 dirName=%r path=%r", raw_dir, raw_path_form)
+    if raw_dir != dir_name or raw_path_form != raw_path:
+        log.info("BACKEND: 去引号处理 -> dirName=%r raw_path=%r", dir_name, raw_path)
+    else:
+        log.info("BACKEND: 路径无外层引号，无需去引号")
 
     photos = []
 
@@ -650,12 +674,15 @@ def generate():
         marker = thumbs_dir / ".thumb_build.txt"
         force_thumb = False
         try:
-            if marker.read_text(encoding="utf-8").strip() != THUMB_BUILD:
-                force_thumb = True
-        except OSError:
+            marker_val = marker.read_text(encoding="utf-8").strip() if marker.exists() else "<不存在>"
+        except OSError as exc:
+            marker_val = f"<读取失败:{exc}>"
+        log.info("BACKEND: 缩略图构建签名检查 -> 目录内 marker=%s, 当前 THUMB_BUILD=%s", marker_val, THUMB_BUILD)
+        if marker_val != THUMB_BUILD:
             force_thumb = True
-        if force_thumb:
-            log.info("BACKEND: 缩略图构建签名变化，本次扫描将强制重建全部缩略图（解决方向/质量更新）")
+            log.info("BACKEND: 签名不匹配 -> 本次扫描强制重建全部缩略图（覆盖旧的横置缩略图）")
+        else:
+            log.info("BACKEND: 签名匹配 -> 走增量缓存，仅重新生成变动的图片")
         log.info("BACKEND: 开始扫描目录「%s」，共 %d 张图片（增量 + 并行生成：已复用缓存的将跳过）", dir_name, total)
 
         # 第一遍（快速、串行）：只判断每张图需要生成哪些产物，避免重复读取/编码
@@ -726,7 +753,8 @@ def generate():
         if force_thumb:
             try:
                 marker.write_text(THUMB_BUILD, encoding="utf-8")
-                log.info("BACKEND: 已写入缩略图构建签名 %s", THUMB_BUILD)
+                log.info("BACKEND: 强制重建完成，共重新生成 %d 张缩略图；已写入构建签名 %s，后续扫描恢复增量缓存",
+                         total - skipped, THUMB_BUILD)
             except OSError as exc:
                 log.warning("BACKEND: 写入缩略图构建签名失败：%s", exc)
     else:
