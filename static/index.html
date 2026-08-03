@@ -11,12 +11,12 @@
     <div class="hero">
       <div class="logo">🖼️</div>
       <h1>欢迎使用PhotoGallery</h1>
-      <p class="sub">输入本地目录的完整路径，后台会扫描其中的照片并生成画廊页面，完成后自动打开。</p>
 
       <div class="scanrow">
         <input type="text" id="pathInput" placeholder="请输入服务器可访问的完整目录路径，例如 /Users/zhuxiaodong/Pictures" autocomplete="off" />
         <button class="btn primary" id="scanBtn">扫描并生成</button>
       </div>
+      <p class="hint info dirhint">输入服务器可访问的完整目录路径（例如 /Users/zhuxiaodong/Pictures），后台会扫描其中照片并生成画廊页面，完成后自动打开。</p>
 
       <div class="status" id="status">就绪，请输入目录完整路径后点击「扫描并生成」。</div>
 
@@ -38,30 +38,32 @@
       </section>
     </div>
 
-    <section class="netlinks" id="netLinks" hidden>
-      <h3>🔗 网络共享地址（局域网其他用户可用）</h3>
-      <div class="share-row">
-        <span class="lbl">FTP：</span>
-        <a id="netFtp" href="#" target="_blank"></a>
-        <span class="note">（匿名登录，下载原图）</span>
-        <button class="btn tiny" id="copyNetFtp" type="button">复制</button>
-        <button class="btn tiny" id="browseNetFtp" type="button">浏览</button>
-      </div>
-      <div class="share-row">
-        <span class="lbl">HTTP：</span>
-        <a id="netHttp" href="#" target="_blank"></a>
-        <span class="note">（看画廊）</span>
-        <button class="btn tiny" id="copyNetHttp" type="button">复制</button>
-        <button class="btn tiny" id="browseNetHttp" type="button">浏览</button>
-      </div>
-      <p class="hint info">以上地址中的 IP 为当前本机局域网地址，其他用户需与本机处于同一局域网内访问；HTTP 画廊链接需先生成 gallery.html 后才有效。</p>
-    </section>
+    <div class="panels-row">
+      <section class="netlinks" id="netLinks" hidden>
+        <h3>🔗 网络共享地址（局域网其他用户可用）</h3>
+        <div class="share-row">
+          <span class="lbl">FTP：</span>
+          <a id="netFtp" href="#" target="_blank"></a>
+          <span class="note">（匿名登录，下载原图）</span>
+          <button class="btn tiny" id="copyNetFtp" type="button">复制</button>
+          <button class="btn tiny" id="browseNetFtp" type="button">浏览</button>
+        </div>
+        <div class="share-row">
+          <span class="lbl">HTTP：</span>
+          <a id="netHttp" href="#" target="_blank"></a>
+          <span class="note">（看画廊）</span>
+          <button class="btn tiny" id="copyNetHttp" type="button">复制</button>
+          <button class="btn tiny" id="browseNetHttp" type="button">浏览</button>
+        </div>
+        <p class="hint info">以上地址中的 IP 为当前本机局域网地址，其他用户需与本机处于同一局域网内访问；HTTP 画廊链接需先生成 gallery.html 后才有效。</p>
+      </section>
 
-    <section class="facesearch">
-      <h3>🧑‍🤝‍🧑 人脸整理</h3>
-      <p class="hint info">扫描生成画廊后，后台会自动检测并聚类人脸。点击下方按钮进入「人脸寻找」，按人物浏览、编辑标签、查看每人所有照片。</p>
-      <a class="btn primary" id="faceSearch" href="/faces" target="_blank">🔍 人脸寻找</a>
-    </section>
+      <section class="facesearch">
+        <h3>🧑‍🤝‍🧑 人脸整理</h3>
+        <p class="hint info">扫描生成画廊后，后台会自动检测并聚类人脸。点击下方按钮进入「人脸寻找」，按人物浏览、编辑标签、查看每人所有照片。</p>
+        <a class="btn primary" id="faceSearch" href="/faces" target="_blank">🔍 人脸寻找</a>
+      </section>
+    </div>
 
     <section class="logpanel">
       <div class="loghead" id="loghead">
