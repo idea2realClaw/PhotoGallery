@@ -112,9 +112,10 @@ async function scanByPath(path) {
     });
     const data = await res.json();
     if (res.ok && data.ok) {
-      els.status.textContent = `✅ 已生成 gallery.html（${data.count} 张），已自动打开。`;
+      els.status.textContent = `✅ 已生成 gallery.html（${data.count} 张），正在后台建立人脸索引…`;
       reportEvent(`后台扫描完成：${data.count} 张照片，已自动打开 gallery.html`);
       showShare(data);
+      pollFaceStatus(); // 继续追踪人脸索引进度：状态文案 + 前端日志同步更新
     } else {
       els.status.textContent = "❌ " + (data.error || "扫描失败");
       reportEvent("扫描失败：" + (data.error || "未知错误"));
@@ -130,6 +131,38 @@ async function scanByPath(path) {
     }
   } finally {
     clearTimeout(timer);
+  }
+}
+
+// 扫描（画廊）完成后，后台会在独立线程建立人脸索引；这里持续轮询进度，
+// 把首页状态从「扫描中」推进到「人脸索引完成」，并把人脸事件写入前端日志面板。
+async function pollFaceStatus(maxMs = 8 * 60 * 1000) {
+  const deadline = Date.now() + maxMs;
+  let lastFaces = -1, lastClusters = -1;
+  while (Date.now() < deadline) {
+    try {
+      const s = await (await fetch("/api/faces/status", { cache: "no-store" })).json();
+      if (s.ready) {
+        els.status.textContent = `✅ 人脸索引完成：共 ${s.clusters} 个聚类（人物）、${s.faces} 张人脸。`;
+        reportEvent(`人脸聚类完成，共 ${s.clusters} 个聚类（人物）、${s.faces} 张人脸`);
+        return;
+      } else if (s.running) {
+        if (s.faces !== lastFaces || s.clusters !== lastClusters) {
+          lastFaces = s.faces; lastClusters = s.clusters;
+          els.status.textContent = `⏳ 后台正在建立人脸索引（已检测 ${s.faces} 张人脸，聚类 ${s.clusters} 组）…`;
+          reportEvent(`人脸索引构建中：已检测 ${s.faces} 张人脸，聚类 ${s.clusters} 组`);
+        }
+        await new Promise((r) => setTimeout(r, 2000));
+      } else if (s.error) {
+        els.status.textContent = `⚠️ 人脸索引构建失败：${s.error}`;
+        reportEvent(`人脸索引构建失败：${s.error}`);
+        return;
+      } else {
+        return; // 未在构建（例如本次未触发人脸索引）
+      }
+    } catch (_) {
+      await new Promise((r) => setTimeout(r, 2000));
+    }
   }
 }
 

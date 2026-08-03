@@ -1126,6 +1126,11 @@ def _faces_webui_html() -> str:
     function showBanner(text) { banner.textContent = text; banner.hidden = false; }
     function hideBanner() { banner.hidden = true; }
 
+    // 本地日志上报：/faces 是独立页面，不加载 app.js，这里自备 reportEvent
+    function reportEvent(message) {
+      try { fetch('/api/event', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ message: message }) }); } catch (_) {}
+    }
+
     function renderClusters(clusters) {
       grid.innerHTML = '';
       if (!clusters.length) { empty.hidden = false; return; }
@@ -1180,11 +1185,21 @@ def _faces_webui_html() -> str:
       }).catch(function () { pollStatus(); });
     }
 
+    var _lastFaces = -1, _lastClusters = -1;
     function pollStatus() {
       fetch('/api/faces/status', { cache: 'no-store' }).then(function (r) { return r.json(); }).then(function (s) {
-        if (s.ready) { loadClusters(); }
-        else if (s.running) { showBanner('⏳ 正在后台建立人脸索引（已检测 ' + s.faces + ' 张人脸，聚类 ' + s.clusters + ' 组）…'); setTimeout(pollStatus, 1500); }
-        else if (s.error) { showBanner('人脸索引构建失败：' + s.error); }
+        if (s.ready) {
+          reportEvent('人脸聚类完成，共 ' + s.clusters + ' 个聚类（人物）、' + s.faces + ' 张人脸');
+          loadClusters();
+        }
+        else if (s.running) {
+          if (s.faces !== _lastFaces || s.clusters !== _lastClusters) {
+            _lastFaces = s.faces; _lastClusters = s.clusters;
+            reportEvent('人脸索引构建中：已检测 ' + s.faces + ' 张人脸，聚类 ' + s.clusters + ' 组');
+          }
+          showBanner('⏳ 正在后台建立人脸索引（已检测 ' + s.faces + ' 张人脸，聚类 ' + s.clusters + ' 组）…'); setTimeout(pollStatus, 1500);
+        }
+        else if (s.error) { reportEvent('人脸索引构建失败：' + s.error); showBanner('人脸索引构建失败：' + s.error); }
         else { empty.hidden = false; showBanner('尚未建立人脸索引。请先在首页输入目录并「扫描并生成」。'); }
       }).catch(function () { showBanner('无法连接后端，请确认 PhotoGallery 正在运行。'); });
     }
