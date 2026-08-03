@@ -53,6 +53,7 @@ from flask import (
     send_from_directory,
 )
 from PIL import Image
+Image.MAX_IMAGE_PIXELS = None  # 允许超大图解码（我们自行缩放），避免 DecompressionBomb 警告中断处理
 import time
 import numpy as np
 
@@ -74,6 +75,7 @@ HOME_URL = "http://127.0.0.1:2026/"
 # ---- 人脸索引相关配置 ----
 FACES_DIR = BASE_DIR / "faces"               # 人脸裁剪图目录（由人脸索引生成，含隐私，已 gitignore）
 FACES_JSON = BASE_DIR / "faces.json"         # 人脸数据库（聚类结果 + 标签，已 gitignore）
+FACE_CACHE_FILE = BASE_DIR / "faces_cache.json"  # 人脸检测缓存（按照片签名缓存 emb/bbox，已 gitignore）
 FACE_DET_SIZE = (640, 640)                   # 检测器输入尺寸
 FACE_MATCH_THRESH = 0.4                       # ArcFace 余弦相似度聚类阈值（同人阈值，越大越严格）
 
@@ -191,6 +193,12 @@ def save_thumb_file(data: bytes, dest_dir: Path, thumb_name: str) -> str:
     dest_dir.mkdir(parents=True, exist_ok=True)
     with Image.open(io.BytesIO(data)) as img:
         img = img.convert("RGB")
+        w, h = img.size
+        # 超大图先按 1/2 逐级缩小，减少解码内存与处理开销
+        if w * h > 2000 * 2000 * 4:
+            while w * h > 2000 * 2000 * 2:
+                img = img.resize((max(1, w // 2), max(1, h // 2)))
+                w, h = img.size
         img.thumbnail((480, 480))
         buf = io.BytesIO()
         img.save(buf, "JPEG", quality=82)
@@ -242,6 +250,12 @@ def save_preview_file(data: bytes, dest_dir: Path, preview_name: str) -> str:
     dest_dir.mkdir(parents=True, exist_ok=True)
     with Image.open(io.BytesIO(data)) as img:
         img = img.convert("RGB")
+        w, h = img.size
+        # 超大图先按 1/2 逐级缩小，减少解码内存与处理开销
+        if w * h > 2000 * 2000 * 4:
+            while w * h > 2000 * 2000 * 2:
+                img = img.resize((max(1, w // 2), max(1, h // 2)))
+                w, h = img.size
         img.thumbnail((2000, 2000))
         buf = io.BytesIO()
         img.save(buf, "JPEG", quality=90)
@@ -870,7 +884,8 @@ _face_app_lock = threading.Lock()
 
 def _analysis_image(photo: dict, root: Path, asset_dir: Path, copy_mode: bool):
     """为一张照片挑选最适合做人脸检测/识别的图像（BGR numpy），优先用原图，
-    失败回退到预览图/缩略图。原图过大时缩放到最长边 <=1280 以提速且不影响识别。"""
+    失败回退到预览图/缩略图。原图过大时先按 1/2 逐级预缩放，再缩放到最长边 <=1280，
+    既符合「超大照片先缩 1/2 再处理」，又避免一次性解码/处理超大图拖慢。"""
     if copy_mode:
         candidates = [asset_dir / photo["orig"]]
     else:
@@ -886,8 +901,13 @@ def _analysis_image(photo: dict, root: Path, asset_dir: Path, copy_mode: bool):
                 im = im.convert("RGB")
                 w, h = im.size
                 long = max(w, h)
+                # 超大图（远超目标）：先按 1/2 逐级缩小，减少解码/处理开销
+                if w * h > 1280 * 1280 * 4:
+                    while w * h > 1280 * 1280 * 2:
+                        im = im.resize((max(1, w // 2), max(1, h // 2)))
+                        w, h = im.size
                 if long > 1280:
-                    s = 1280.0 / long
+                    s = 1280.0 / max(w, h)
                     im = im.resize((max(1, int(w * s)), max(1, int(h * s))))
                 return np.asarray(im)[..., ::-1].copy()  # RGB -> BGR
         except Exception:
@@ -919,9 +939,64 @@ def cluster_faces(embs, thresh):
     return list(groups.values())
 
 
+def _face_photo_sig(photo, root, asset_dir, copy_mode):
+    """按源文件（名+大小+mtime）生成不变签名；签名未变即视为照片未改，可复用缓存。"""
+    p = (asset_dir / photo["orig"]) if copy_mode else (root / photo["name"])
+    try:
+        st = p.stat()
+        return hashlib.md5(f"{p.name}:{st.st_size}:{int(st.st_mtime)}".encode()).hexdigest()
+    except OSError:
+        return None
+
+
+def _face_crop_path(sig, idx):
+    return f"face_{sig}_{idx}.jpg"
+
+
+def _face_clarity(crop_bgr):
+    """用灰度梯度方差估计清晰度（越高越清晰），免 cv2 依赖。"""
+    gray = (0.299 * crop_bgr[..., 2] + 0.587 * crop_bgr[..., 1] + 0.114 * crop_bgr[..., 0]).astype(np.float32)
+    gx = np.diff(gray, axis=1)   # (H, W-1)
+    gy = np.diff(gray, axis=0)   # (H-1, W)
+    g = gx[:-1, :] ** 2 + gy[:, :-1] ** 2  # 统一到 (H-1, W-1)
+    return float(g.mean())
+
+
+def _regenerate_crop(img, bbox, crop_path):
+    x, y, w, h = [int(v) for v in bbox]
+    ih, iw = img.shape[:2]
+    x1 = max(0, x); y1 = max(0, y)
+    x2 = min(iw, x + w); y2 = min(ih, y + h)
+    if x2 <= x1 or y2 <= y1:
+        return False
+    crop = img[y1:y2, x1:x2]
+    if crop.size == 0:
+        return False
+    Image.fromarray(crop[..., ::-1]).resize((112, 112)).save(FACES_DIR / crop_path, "JPEG", quality=90)
+    return True
+
+
+def _load_face_cache():
+    try:
+        if FACE_CACHE_FILE.exists():
+            return json.loads(FACE_CACHE_FILE.read_text(encoding="utf-8"))
+    except Exception:
+        pass
+    return {}
+
+
+def _save_face_cache(cache):
+    try:
+        FACE_CACHE_FILE.write_text(json.dumps(cache, ensure_ascii=False), encoding="utf-8")
+    except Exception as exc:
+        log.warning("BACKEND: 人脸缓存保存失败：%s", exc)
+
+
 def build_face_index(root: Path, photos: list, asset_dir: Path, copy_mode: bool) -> None:
     """后台线程入口：对每张照片检测人脸、裁剪、提取特征，再聚类，
-    结果写入 faces.json（聚类 + 标签），人脸裁剪图写入 faces/。"""
+    结果写入 faces.json（聚类 + 标签 + 封面），人脸裁剪图写入 faces/。
+    已处理过的照片（签名未变）直接复用缓存的嵌入向量，跳过 insightface 检测，大幅提速；
+    聚类后按成员照片重叠匹配旧聚类，稳定携带 label 与用户设置的封面。"""
     FACE_INDEX["running"] = True
     FACE_INDEX["ready"] = False
     FACE_INDEX["faces"] = 0
@@ -930,10 +1005,47 @@ def build_face_index(root: Path, photos: list, asset_dir: Path, copy_mode: bool)
     try:
         fa = get_face_app()
         FACES_DIR.mkdir(parents=True, exist_ok=True)
+        cache = _load_face_cache()
+        old = load_faces() or {}
+        old_clusters = old.get("clusters", {})
+        old_faces = old.get("faces", [])
+        old_cluster_photos = {}
+        for cid, c in old_clusters.items():
+            old_cluster_photos[cid] = set(f["photo"] for f in old_faces if f.get("cluster") == int(cid))
+
         faces = []
         embeddings = []
         fid = 0
+        reused_photos = 0
+        new_photos = 0
         for photo in photos:
+            sig = _face_photo_sig(photo, root, asset_dir, copy_mode)
+            cached = cache.get(sig) if sig else None
+            if cached:
+                # 复用缓存的检测结果，跳过 insightface 检测（核心提速点）
+                for ci2, cf in enumerate(cached):
+                    emb = np.asarray(cf["emb"], dtype=np.float32)
+                    nrm = np.linalg.norm(emb)
+                    if nrm <= 0:
+                        continue
+                    emb = emb / nrm
+                    crop_path = _face_crop_path(sig, ci2)
+                    if not (FACES_DIR / crop_path).exists():
+                        img = _analysis_image(photo, root, asset_dir, copy_mode)
+                        if img is None or not _regenerate_crop(img, cf["bbox"], crop_path):
+                            continue
+                    faces.append({
+                        "id": fid, "photo": photo["name"],
+                        "bbox": cf["bbox"], "crop": crop_path,
+                        "score": cf.get("score", 0.0), "clarity": cf.get("clarity", 0.0),
+                        "cluster": -1,
+                    })
+                    embeddings.append(emb)
+                    fid += 1
+                reused_photos += 1
+                FACE_INDEX["faces"] = fid  # 实时更新进度，避免构建中一直显示 0
+                continue
+            # 新照片：检测 + 嵌入
             img = _analysis_image(photo, root, asset_dir, copy_mode)
             if img is None:
                 continue
@@ -942,6 +1054,7 @@ def build_face_index(root: Path, photos: list, asset_dir: Path, copy_mode: bool)
             except Exception as exc:
                 log.warning("BACKEND: 人脸检测失败 %s：%s", photo["name"], exc)
                 continue
+            new_cached = []
             for d in dets:
                 try:
                     emb = np.asarray(d.embedding, dtype=np.float32)
@@ -959,33 +1072,65 @@ def build_face_index(root: Path, photos: list, asset_dir: Path, copy_mode: bool)
                     crop = img[y1:y2, x1:x2]
                     if crop.size == 0:
                         continue
+                    clarity = _face_clarity(crop)
                     crop_pil = Image.fromarray(crop[..., ::-1]).resize((112, 112))
-                    cpath = FACES_DIR / f"face_{fid}.jpg"
-                    crop_pil.save(cpath, "JPEG", quality=90)
+                    cpath = _face_crop_path(sig, len(new_cached)) if sig else f"face_{fid}.jpg"
+                    crop_pil.save(FACES_DIR / cpath, "JPEG", quality=90)
                     faces.append({
                         "id": fid, "photo": photo["name"],
-                        "bbox": [x1, y1, x2 - x1, y2 - y1],
-                        "crop": f"faces/face_{fid}.jpg",
-                        "score": round(float(d.det_score), 3),
+                        "bbox": [x1, y1, x2 - x1, y2 - y1], "crop": cpath,
+                        "score": round(float(d.det_score), 3), "clarity": round(clarity, 2),
                         "cluster": -1,
                     })
                     embeddings.append(emb)
+                    new_cached.append({
+                        "bbox": [x1, y1, x2 - x1, y2 - y1],
+                        "emb": emb.tolist(), "score": round(float(d.det_score), 3),
+                        "clarity": round(clarity, 2),
+                    })
                     fid += 1
                 except Exception as exc:
                     log.warning("BACKEND: 单张人脸处理失败：%s", exc)
+            if new_cached:
+                if sig:
+                    cache[sig] = new_cached
+                new_photos += 1
         FACE_INDEX["faces"] = fid
-        log.info("BACKEND: 人脸检测完成，共 %d 张人脸（来自 %d 张照片）", fid, len(photos))
+        log.info("BACKEND: 人脸检测完成（复用 %d 张已处理照片，新检测 %d 张，共 %d 张人脸）", reused_photos, new_photos, fid)
 
         groups = cluster_faces(embeddings, FACE_MATCH_THRESH)
+        # 稳定携带旧聚类的 label 与用户设置的封面
+        old_version = old.get("version", 1)
+        new_cluster_photos = {}
+        for ci, members in enumerate(groups):
+            new_cluster_photos[ci] = set(faces[i]["photo"] for i in members)
         cdict = {}
         for ci, members in enumerate(groups):
-            rep = max(members, key=lambda i: faces[i]["score"])
-            cdict[str(ci)] = {"label": "", "rep": rep, "count": len(members)}
+            rep = max(members, key=lambda i: faces[i].get("clarity", 0.0))  # 默认封面：最清晰的一张
+            label = ""
+            best_old = None
+            best_j = 0.0
+            for ocid, ophotos in old_cluster_photos.items():
+                union = len(new_cluster_photos[ci] | ophotos)
+                j = len(new_cluster_photos[ci] & ophotos) / union if union else 0
+                if j > best_j:
+                    best_j = j
+                    best_old = ocid
+            if best_old is not None and best_j >= 0.5:
+                oldc = old_clusters[best_old]
+                label = oldc.get("label", "")
+                # 仅当旧索引已是 v2（封面已是清晰度/用户设定）才沿用旧封面；
+                # 从 v1 升级时旧封面是分数制的、非用户设定，一律改回最清晰封面
+                if old_version >= 2:
+                    old_rep = oldc.get("rep")
+                    if old_rep is not None and old_rep in members:
+                        rep = old_rep
+            cdict[str(ci)] = {"label": label, "rep": rep, "count": len(members)}
             for i in members:
                 faces[i]["cluster"] = ci
         FACE_INDEX["clusters"] = len(groups)
         data = {
-            "version": 1,
+            "version": 2,
             "root": str(root),
             "generated_at": time.strftime("%Y-%m-%d %H:%M:%S"),
             "photos": photos,
@@ -994,6 +1139,7 @@ def build_face_index(root: Path, photos: list, asset_dir: Path, copy_mode: bool)
         }
         FACES_JSON.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
         FACE_INDEX["ready"] = True
+        _save_face_cache(cache)
         log.info("BACKEND: 人脸聚类完成，共 %d 个聚类（人物）", len(groups))
     except Exception as exc:
         FACE_INDEX["error"] = str(exc)
@@ -1040,11 +1186,16 @@ def faces_clusters():
 
 @app.route("/faces/face/<int:fid>")
 def face_image(fid):
-    """返回某张人脸裁剪图。"""
-    p = FACES_DIR / f"face_{fid}.jpg"
-    if not p.exists():
-        return "404", 404
-    return send_from_directory(str(FACES_DIR), f"face_{fid}.jpg")
+    """返回某张人脸裁剪图（按 faces.json 中的 crop 稳定路径查找，兼容增量缓存命名）。"""
+    d = load_faces()
+    crop = None
+    if d:
+        faces = d.get("faces", [])
+        if 0 <= fid < len(faces):
+            crop = faces[fid].get("crop")
+    if crop and (FACES_DIR / crop).exists():
+        return send_from_directory(str(FACES_DIR), crop)
+    return "404", 404
 
 
 @app.route("/api/faces/label", methods=["POST"])
@@ -1060,6 +1211,33 @@ def faces_label():
     if key not in d["clusters"]:
         return jsonify(ok=False, reason="bad-pid"), 404
     d["clusters"][key]["label"] = label
+    try:
+        FACES_JSON.write_text(json.dumps(d, ensure_ascii=False), encoding="utf-8")
+        return jsonify(ok=True)
+    except Exception as exc:
+        return jsonify(ok=False, reason=str(exc)), 500
+
+
+@app.route("/api/faces/rep", methods=["POST"])
+def faces_rep():
+    """设置某聚类（人物）的封面人脸 fid（用户可在人物页手动更换封面）。"""
+    js = request.get_json(silent=True) or {}
+    pid = js.get("pid")
+    fid = js.get("fid")
+    d = load_faces()
+    if not d:
+        return jsonify(ok=False, reason="no-index"), 404
+    key = str(pid)
+    if key not in d["clusters"]:
+        return jsonify(ok=False, reason="bad-pid"), 404
+    try:
+        fid = int(fid)
+    except (TypeError, ValueError):
+        return jsonify(ok=False, reason="bad-fid"), 400
+    faces = d.get("faces", [])
+    if not (0 <= fid < len(faces) and faces[fid].get("cluster") == int(pid)):
+        return jsonify(ok=False, reason="fid-not-in-cluster"), 400
+    d["clusters"][key]["rep"] = fid
     try:
         FACES_JSON.write_text(json.dumps(d, ensure_ascii=False), encoding="utf-8")
         return jsonify(ok=True)
@@ -1219,7 +1397,7 @@ def faces_webui():
 
 @app.route("/faces/person/<int:pid>")
 def faces_person(pid):
-    """该人物（聚类）的所有照片画廊，复用 build_gallery_html 的灯箱体验。"""
+    """该人物（聚类）的所有照片画廊 + 全部人脸缩略图（可手动设封面），复用 build_gallery_html 灯箱。"""
     d = load_faces()
     if not d:
         return "尚未建立人脸索引，请先扫描目录生成画廊。", 404
@@ -1236,6 +1414,7 @@ def faces_person(pid):
     photos_map = {p["name"]: p for p in d.get("photos", [])}
     sub = [photos_map[n] for n in names if n in photos_map]
     label = c.get("label") or f"人物 {pid}"
+    rep_fid = c.get("rep")
     # 把相对路径改成 /share/ 绝对路径（该页不在 /share 下）
     def _abs(p):
         return "/share/" + p if p and not p.startswith("/") else p
@@ -1247,6 +1426,43 @@ def faces_person(pid):
         "full": p.get("full", p["name"]),
     } for p in sub]
     html = build_gallery_html(f"{label}（{len(sub2)} 张）", sub2)
+    # 人脸缩略图条：每张可一键设为聚类封面
+    if member_faces:
+        cards = []
+        for f in member_faces:
+            fid = f["id"]
+            if fid == rep_fid:
+                cls = "face-card is-rep"
+                mark = "已设封面"
+            else:
+                cls = "face-card"
+                mark = "设为封面"
+            cards.append(
+                '<div class="' + cls + '"><img src="/faces/face/' + str(fid) +
+                '" alt="face ' + str(fid) + '" loading="lazy"/>' +
+                '<button class="set-cover" data-pid="' + str(pid) + '" data-fid="' + str(fid) +
+                '">' + mark + '</button></div>'
+            )
+        css = ('<style>.faces-strip{max-width:1100px;margin:14px auto;padding:0 16px;}'
+               '.faces-strip h3{font-size:15px;color:#444;margin-bottom:8px;}'
+               '.faces-row{display:flex;flex-wrap:wrap;gap:10px;}'
+               '.face-card{width:96px;text-align:center;}'
+               '.face-card img{width:96px;height:96px;object-fit:cover;border-radius:8px;border:2px solid transparent;}'
+               '.face-card.is-rep img{border-color:#2e7d32;}'
+               '.set-cover{margin-top:4px;font-size:11px;width:100%;padding:3px 0;border:none;border-radius:6px;background:#eee;cursor:pointer;}'
+               '.set-cover:hover{background:#d7e7d8;}</style>')
+        strip = (css + '<section class="faces-strip"><h3>🧑 该人物的全部人脸'
+                  '（点击「设为封面」可更换聚类封面）</h3><div class="faces-row">'
+                  + "".join(cards) + '</div></section>')
+        html = html.replace("<main>", strip + "<main>", 1)
+        script = ('<script>document.querySelectorAll(".set-cover").forEach(function(btn){'
+                  'btn.addEventListener("click",function(){'
+                  'var fid=btn.dataset.fid,pid=btn.dataset.pid;'
+                  'fetch("/api/faces/rep",{method:"POST",headers:{"Content-Type":"application/json"},'
+                  'body:JSON.stringify({pid:pid,fid:fid})}).then(function(r){return r.json();}).then(function(j){'
+                  'if(j.ok){document.querySelectorAll(".set-cover").forEach(function(b){b.textContent="设为封面";});'
+                  'btn.textContent="已设封面";}else{btn.textContent="设置失败";}});});});</script>')
+        html = html.replace("</body>", script + "</body>", 1)
     # 把画廊页的「返回主页」改成「返回人脸」（HOME_URL 在 build_gallery_html 中已被替换为真实地址）
     html = html.replace(f'class="home-btn" href="{HOME_URL}"', 'class="home-btn" href="/faces"')
     html = html.replace("← 返回主页", "← 返回人脸")

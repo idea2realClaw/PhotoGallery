@@ -23,6 +23,7 @@ fold.json
 # 人脸索引：含生物特征与人脸裁剪图（由源照片生成，禁止上传）
 faces/
 faces.json
+faces_cache.json
 # 日志文件
 *.log
 
