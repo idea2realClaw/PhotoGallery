@@ -86,12 +86,13 @@ main.home {
   background: #f5f8ff; border: 1px solid #cfe0ff; border-radius: 12px; padding: 16px 18px;
 }
 .sharebox h3 { margin: 0 0 10px; font-size: 15px; color: #244; }
-.sharebox .share-row { display: flex; align-items: center; gap: 8px; margin: 8px 0; flex-wrap: wrap; }
-.sharebox .lbl { font-size: 13px; color: var(--muted); white-space: nowrap; }
+.sharebox .share-row { display: flex; align-items: center; gap: 10px; margin: 10px 0; }
+.sharebox .lbl { flex: 0 0 175px; width: 175px; text-align: right; font-size: 13px; color: var(--muted); white-space: nowrap; }
 .sharebox code {
-  flex: 1; min-width: 180px; font-size: 13px; padding: 6px 9px; background: #fff;
+  flex: 1 1 auto; min-width: 0; font-size: 13px; padding: 6px 9px; background: #fff;
   border: 1px solid #d6e2ff; border-radius: 7px; color: #1a3a8f; word-break: break-all;
 }
+.sharebox .actions { flex: 0 0 auto; display: flex; gap: 6px; }
 
 /* 网络共享地址 + 人脸整理：并排两栏，宽度与上方输入目录 Panel 对齐 */
 .panels-row {
@@ -107,15 +108,17 @@ main.home {
   background: #f4fff7; border: 1px solid #bfe9cf; border-radius: 12px; padding: 16px 18px;
 }
 .netlinks h3 { margin: 0 0 10px; font-size: 15px; color: #1f5f3a; }
-.netlinks .share-row { display: flex; align-items: center; gap: 8px; margin: 8px 0; flex-wrap: wrap; }
-.netlinks .lbl { font-size: 13px; color: var(--muted); white-space: nowrap; }
-.netlinks .note { font-size: 12px; color: var(--muted); }
-.netlinks a {
-  flex: 1; min-width: 180px; font-size: 13px; padding: 6px 9px; background: #fff;
+.netlinks .share-row { display: flex; align-items: flex-start; gap: 10px; margin: 10px 0; }
+.netlinks .lbl { flex: 0 0 52px; width: 52px; text-align: right; font-size: 13px; color: var(--muted); white-space: nowrap; padding-top: 7px; }
+.netlinks .url-col { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+.netlinks .url-col a {
+  font-size: 13px; padding: 6px 9px; background: #fff;
   border: 1px solid #c4e8d4; border-radius: 7px; color: #155f37; word-break: break-all;
   text-decoration: none;
 }
-.netlinks a:hover { text-decoration: underline; background: #eafff2; }
+.netlinks .url-col a:hover { text-decoration: underline; background: #eafff2; }
+.netlinks .note { font-size: 12px; color: var(--muted); }
+.netlinks .actions { flex: 0 0 auto; display: flex; gap: 6px; align-items: center; padding-top: 5px; }
 
 /* 人脸整理区块 */
 .facesearch {

@@ -24,14 +24,18 @@
         <div class="share-row">
           <span class="lbl">FTP 下载（选中目录）：</span>
           <code id="ftpUrl"></code>
-          <button class="btn tiny" id="copyFtp" type="button">复制</button>
-          <button class="btn tiny" id="browseFtp" type="button">浏览</button>
+          <div class="actions">
+            <button class="btn tiny" id="copyFtp" type="button">复制</button>
+            <button class="btn tiny" id="browseFtp" type="button">浏览</button>
+          </div>
         </div>
         <div class="share-row">
           <span class="lbl">HTTP 画廊（gallery.html）：</span>
           <code id="shareUrl"></code>
-          <button class="btn tiny" id="copyShare" type="button">复制</button>
-          <button class="btn tiny" id="browseShare" type="button">浏览</button>
+          <div class="actions">
+            <button class="btn tiny" id="copyShare" type="button">复制</button>
+            <button class="btn tiny" id="browseShare" type="button">浏览</button>
+          </div>
         </div>
         <p class="hint info">FTP 为匿名只读，其他用户用 FTP 客户端连接上面的地址即可取走原图；用浏览器打开 HTTP 地址即可查看画廊。</p>
       </section>
@@ -42,17 +46,25 @@
         <h3>🔗 网络共享地址（局域网其他用户可用）</h3>
         <div class="share-row">
           <span class="lbl">FTP：</span>
-          <a id="netFtp" href="#" target="_blank"></a>
-          <span class="note">（匿名登录，下载原图）</span>
-          <button class="btn tiny" id="copyNetFtp" type="button">复制</button>
-          <button class="btn tiny" id="browseNetFtp" type="button">浏览</button>
+          <div class="url-col">
+            <a id="netFtp" href="#" target="_blank"></a>
+            <span class="note">（匿名登录，下载原图）</span>
+          </div>
+          <div class="actions">
+            <button class="btn tiny" id="copyNetFtp" type="button">复制</button>
+            <button class="btn tiny" id="browseNetFtp" type="button">浏览</button>
+          </div>
         </div>
         <div class="share-row">
           <span class="lbl">HTTP：</span>
-          <a id="netHttp" href="#" target="_blank"></a>
-          <span class="note">（看画廊）</span>
-          <button class="btn tiny" id="copyNetHttp" type="button">复制</button>
-          <button class="btn tiny" id="browseNetHttp" type="button">浏览</button>
+          <div class="url-col">
+            <a id="netHttp" href="#" target="_blank"></a>
+            <span class="note">（看画廊）</span>
+          </div>
+          <div class="actions">
+            <button class="btn tiny" id="copyNetHttp" type="button">复制</button>
+            <button class="btn tiny" id="browseNetHttp" type="button">浏览</button>
+          </div>
         </div>
         <p class="hint info">以上地址中的 IP 为当前本机局域网地址，其他用户需与本机处于同一局域网内访问；HTTP 画廊链接需先生成 gallery.html 后才有效。</p>
       </section>
