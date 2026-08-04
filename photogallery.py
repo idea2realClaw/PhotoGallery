@@ -20,7 +20,7 @@ PhotoGallery — 本地 WebUI 照片画廊生成器（含局域网共享）
     （内部相对引用的原图/缩略图也都经 /share 提供）。
 
 运行：
-  python app.py   ->  WebUI/FTP/共享 分别监听（见各端口常量）
+  python photogallery.py   ->  WebUI/FTP/共享 分别监听（见各端口常量）
 后台会持续把「前端事件」与「后台工作进展」打印到控制台，
 并可通过 /api/logstream (SSE) 实时推送到前端的日志面板。
 """

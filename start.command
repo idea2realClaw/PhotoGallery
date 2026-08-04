@@ -16,4 +16,4 @@ echo "============================================"
 echo
 echo "[启动中 ... 按 Ctrl+C 停止]"
 echo
-exec "$PY" app.py
+exec "$PY" photogallery.py

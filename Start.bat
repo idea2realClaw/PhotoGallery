@@ -22,7 +22,7 @@ echo.
 REM 进入脚本所在目录
 cd /d "%~dp0"
 
-REM 若依赖未安装则自动安装（app.py 需要 flask+Pillow+numpy，人脸索引需要 insightface，可选 pyftpdlib 用于 FTP 共享）
+REM 若依赖未安装则自动安装（photogallery.py 需要 flask+Pillow+numpy，人脸索引需要 insightface，可选 pyftpdlib 用于 FTP 共享）
 "%PYTHON%" -c "import flask, PIL, numpy, insightface" 2>nul
 if errorlevel 1 (
     echo [安装依赖 flask + Pillow + numpy + insightface + pyftpdlib ...]
@@ -31,7 +31,7 @@ if errorlevel 1 (
 
 echo [启动中 ... 按 Ctrl+C 停止]
 echo.
-"%PYTHON%" app.py
+"%PYTHON%" photogallery.py
 echo.
 echo 服务已停止。按任意键关闭窗口。
 pause >nul

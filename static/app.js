@@ -56,7 +56,7 @@ async function checkHealth() {
   showHealthBanner(!ok);
   if (els.scanBtn) {
     els.scanBtn.disabled = !ok;
-    els.scanBtn.title = ok ? "" : "后台未连接，请先运行启动器（start.command / python app.py）并刷新页面";
+    els.scanBtn.title = ok ? "" : "后台未连接，请先运行启动器（start.command / python photogallery.py）并刷新页面";
   }
   return ok;
 }
@@ -97,7 +97,7 @@ async function scanByPath(path) {
   // 先快速探活：后台没启动就直接提示，避免无谓等待与“连不上”的困惑
   if (!(await pingHealth())) {
     showHealthBanner(true);
-    els.status.textContent = "❌ 后台未连接：请先运行启动器（start.command / python app.py）并刷新页面。";
+    els.status.textContent = "❌ 后台未连接：请先运行启动器（start.command / python photogallery.py）并刷新页面。";
     reportEvent("扫描前健康检查失败：后台未启动");
     return;
   }
