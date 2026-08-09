@@ -366,10 +366,10 @@ def build_gallery_html(dir_name: str, photos: list) -> str:
     z-index: 100; display: flex; align-items: center; justify-content: center; }}
   .lightbox[hidden] {{ display: none; }}
   #lbStage {{ position: absolute; inset: 0; display: flex; align-items: center;
-    justify-content: center; overflow: hidden; }}
+    justify-content: center; overflow: hidden; touch-action: none; }}
   .lightbox img {{ max-width: 92vw; max-height: 84vh; object-fit: contain;
     border-radius: 6px; box-shadow: 0 10px 40px rgba(0,0,0,.5);
-    transform-origin: center center; transition: transform .08s ease-out; }}
+    transform-origin: center center; transition: transform .08s ease-out; touch-action: none; }}
   .lb-close {{ position: absolute; top: 18px; right: 22px; z-index: 120; width: 42px; height: 42px;
     border-radius: 50%; border: none; background: rgba(255,255,255,.15); color: #fff;
     font-size: 24px; cursor: pointer; }}
@@ -495,6 +495,7 @@ def build_gallery_html(dir_name: str, photos: list) -> str:
     // 加载成功才切换画面，失败则保留缩略图（不破图）并提示格式不支持。
     function loadView(onready) {{
       if (usingView) {{ onready && onready(); return; }}
+      if (origLoading) {{ onready && onready(); return; }}
       const url = encodeURI(PHOTOS[cur].view || PHOTOS[cur].orig || "");
       if (!url) {{ onready && onready(); return; }}
       origLoading = true;
@@ -544,6 +545,86 @@ def build_gallery_html(dir_name: str, photos: list) -> str:
         reportEvent("灯箱缩放：" + Math.round(scale * 100) + "%" + (usingView ? "" : "（加载原图中）"));
       }}
     }}, {{ passive: false }});
+
+    // ---- 移动端触控：双指捏合缩放 + 双击放大/还原 + 单指平移/滑动切换 ----
+    // 桌面端靠 wheel 触发 loadView() 下载原图；移动端无滚轮，必须在此处触发。
+    let touchMode = 0;                 // 0:无 1:单指 2:双指
+    let pinchStartDist = 0, pinchStartScale = 1;
+    let touchStartX = 0, touchStartY = 0, touchStartT = 0, touchMoved = false;
+    let lastTapT = 0, lastTapX = 0, lastTapY = 0, tapTimer = null;
+    function dist2(a, b) {{ return Math.hypot(a.clientX - b.clientX, a.clientY - b.clientY); }}
+    lbStage.addEventListener('touchstart', function (e) {{
+      if (e.touches.length === 2) {{
+        touchMode = 2;
+        pinchStartDist = dist2(e.touches[0], e.touches[1]);
+        pinchStartScale = scale;
+        if (tapTimer) {{ clearTimeout(tapTimer); tapTimer = null; }}
+      }} else if (e.touches.length === 1) {{
+        touchMode = 1;
+        touchStartX = e.touches[0].clientX; touchStartY = e.touches[0].clientY;
+        touchStartT = Date.now(); touchMoved = false;
+        startX = e.touches[0].clientX - tx; startY = e.touches[0].clientY - ty;
+      }}
+    }}, {{ passive: true }});
+    lbStage.addEventListener('touchmove', function (e) {{
+      if (e.touches.length === 2) {{
+        e.preventDefault();
+        const d = dist2(e.touches[0], e.touches[1]);
+        if (pinchStartDist > 0) {{
+          scale = pinchStartScale * (d / pinchStartDist);
+          if (scale < 1) scale = 1;
+          if (scale > 6) scale = 6;
+          if (scale > 1 && !usingView) loadView();   // 放大即下载原图
+          applyTransform();
+        }}
+      }} else if (e.touches.length === 1 && scale > 1) {{
+        e.preventDefault();
+        touchMoved = true;
+        tx = e.touches[0].clientX - startX; ty = e.touches[0].clientY - startY;
+        applyTransform();
+      }}
+    }}, {{ passive: false }});
+    lbStage.addEventListener('touchend', function (e) {{
+      if (touchMode === 2) {{
+        if (e.touches.length === 1) {{            // 双指抬起一指，转单指平移基准
+          touchMode = 1;
+          startX = e.touches[0].clientX - tx; startY = e.touches[0].clientY - ty;
+        }} else {{ touchMode = 0; }}
+        if (scale <= 1) {{ scale = 1; tx = 0; ty = 0; applyTransform(); }}
+        return;
+      }}
+      if (touchMode === 1) {{
+        const cx = e.changedTouches[0].clientX, cy = e.changedTouches[0].clientY;
+        const dx = cx - touchStartX, dy = cy - touchStartY;
+        const adx = Math.abs(dx), ady = Math.abs(dy);
+        if (adx > 50 || ady > 50) touchMoved = true;
+        if (!touchMoved && scale === 1) {{
+          const now = Date.now();
+          const isDouble = (now - lastTapT < 300) && Math.abs(cx - lastTapX) < 30 && Math.abs(cy - lastTapY) < 30;
+          if (isDouble) {{                          // 双击：1x <-> 2.5x 切换
+            lastTapT = 0;
+            if (tapTimer) {{ clearTimeout(tapTimer); tapTimer = null; }}
+            if (scale > 1) {{ scale = 1; tx = 0; ty = 0; }}
+            else {{ scale = 2.5; if (!usingView) loadView(); }}
+            applyTransform();
+            reportEvent("灯箱双击缩放：" + Math.round(scale * 100) + "%");
+            touchMode = 0; return;
+          }}
+          lastTapT = now; lastTapX = cx; lastTapY = cy;
+          const tapTarget = e.changedTouches[0].target;
+          tapTimer = setTimeout(function () {{       // 延时判定单击（未放大点背景/图片=关闭）
+            tapTimer = null;
+            if (scale === 1 && (tapTarget === lbStage || tapTarget === lbImg)) closeLB();
+          }}, 300);
+        }} else if (scale === 1 && adx > 50 && adx > ady) {{   // 未放大单指水平滑动切换
+          suppressClose = true; setTimeout(function () {{ suppressClose = false; }}, 0);
+          const n = PHOTOS.length;
+          if (dx < 0) {{ reportEvent("灯箱下一张：" + PHOTOS[((cur + 1) % n) % n].full); show(cur + 1); }}
+          else {{ reportEvent("灯箱上一张：" + PHOTOS[((cur - 1) % n + n) % n].full); show(cur - 1); }}
+        }}
+        touchMode = 0;
+      }}
+    }}, {{ passive: true }});
 
     // 遮罩区域屏蔽右键菜单（避免误触）；图片上的右键见下方 lbImg 监听
     lbStage.addEventListener('contextmenu', function (e) {{ if (e.target !== lbImg) e.preventDefault(); }});
