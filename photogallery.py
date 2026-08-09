@@ -385,6 +385,16 @@ def build_gallery_html(dir_name: str, photos: list) -> str:
   .lb-info {{ position: absolute; bottom: 18px; right: 22px; z-index: 120; color: #cfd4e2;
     font-size: 13px; background: rgba(0,0,0,.35); padding: 3px 10px; border-radius: 8px; }}
 
+  /* 右下角「原图加载中…」提示：独立于 lb-info，避免被缩放百分比覆盖而不显示 */
+  .lb-loading {{ position: fixed; right: 18px; bottom: 18px; z-index: 150;
+    display: flex; align-items: center; gap: 8px; background: rgba(18,22,38,.82);
+    color: #fff; padding: 10px 16px; border-radius: 10px; font-size: 14px;
+    box-shadow: 0 6px 20px rgba(0,0,0,.32); }}
+  .lb-loading[hidden] {{ display: none; }}
+  .lb-loading .spinner {{ width: 14px; height: 14px; border: 2px solid rgba(255,255,255,.35);
+    border-top-color: #fff; border-radius: 50%; animation: lbspin .7s linear infinite; }}
+  @keyframes lbspin {{ to {{ transform: rotate(360deg); }} }}
+
   /* 右键加载完原图后弹出的「下载原图」菜单（自定义，浏览器不允许代码触发原生菜单） */
   .lb-menu {{ position: fixed; z-index: 200; background: #fff; color: #1f2430;
     border: 1px solid #e6e8ee; border-radius: 10px; box-shadow: 0 8px 28px rgba(0,0,0,.28);
@@ -399,8 +409,8 @@ def build_gallery_html(dir_name: str, photos: list) -> str:
   <header>
     <div class="title">PhotoGallery<small>{dir_name} · {len(photos)} 张照片</small></div>
     <div style="display:flex; gap:10px; align-items:center;">
-      <a class="home-btn" href="{HOME_URL}faces" style="background:#fff; color:#3b6cff; border-color:#3b6cff;">🧑 人脸寻找</a>
-      <a class="home-btn" href="{HOME_URL}">← 返回主页</a>
+      <a class="home-btn" id="faceSearchBtn" href="{HOME_URL}faces" style="background:#fff; color:#3b6cff; border-color:#3b6cff;">🧑 人脸寻找</a>
+      <a class="home-btn" id="homeBtn" href="{HOME_URL}">← 返回主页</a>
     </div>
   </header>
   <main>
@@ -417,6 +427,9 @@ def build_gallery_html(dir_name: str, photos: list) -> str:
     <button class="lb-nav lb-next" id="lbNext" aria-label="下一张">›</button>
     <div class="lb-name" id="lbName"></div>
     <div class="lb-info" id="lbInfo">100%</div>
+    <div class="lb-loading" id="lbLoading" hidden>
+      <span class="spinner"></span><span>原图加载中…</span>
+    </div>
     <div class="lb-menu" id="lbMenu" hidden>
       <button type="button" id="lbMenuDownload">⬇️ 下载原图</button>
     </div>
@@ -424,6 +437,20 @@ def build_gallery_html(dir_name: str, photos: list) -> str:
 
   <script>
     const PHOTOS = {photos_json};
+
+    // 首页「返回主页」与「人脸寻找」地址：file:// 打开时用本机 127.0.0.1；
+    // 经 HTTP 访问（含远程设备通过 /share/ 浏览）时用当前 origin，
+    // 这样远程设备点击能正确访问服务端，而非误连自己本机的 127.0.0.1。
+    const IS_FILE = (location.protocol === 'file:');
+    const HOME_URL = IS_FILE ? 'http://127.0.0.1:2026/' : (location.origin + '/');
+    (function fixNavLinks() {{
+      const faceBtn = document.getElementById('faceSearchBtn');
+      const homeBtn = document.getElementById('homeBtn');
+      if (faceBtn) faceBtn.href = HOME_URL + 'faces';
+      // person 页（/faces/person/）已把「返回主页」改写为「返回人脸」(href=/faces)，不覆盖；
+      // 普通画廊页才用 HOME_URL 指向服务端主页
+      if (homeBtn && location.pathname.indexOf('/faces/') !== 0) homeBtn.href = HOME_URL;
+    }})();
 
     // 前端事件上报（同源/跨域均可；file:// 打开时若被 CORS 拦截则静默忽略）
     function reportEvent(message) {{
@@ -440,6 +467,9 @@ def build_gallery_html(dir_name: str, photos: list) -> str:
     const lbInfo = document.getElementById('lbInfo');
     const lbMenu = document.getElementById('lbMenu');
     const lbMenuDownload = document.getElementById('lbMenuDownload');
+    const lbLoading = document.getElementById('lbLoading');
+    function showLoading() {{ if (lbLoading) lbLoading.hidden = false; }}
+    function hideLoading() {{ if (lbLoading) lbLoading.hidden = true; }}
     let cur = 0, scale = 1, tx = 0, ty = 0, panning = false, startX = 0, startY = 0,
         suppressClose = false, usingView = false, origLoading = false;
 
@@ -453,6 +483,7 @@ def build_gallery_html(dir_name: str, photos: list) -> str:
       cur = ((i % n) + n) % n;
       usingView = false; origLoading = false;
       hideMenu();
+      hideLoading();   // 切换照片时重置右下角提示
       lbImg.src = PHOTOS[cur].thumb;          // 先看缩略图（快速）
       lbName.textContent = PHOTOS[cur].full;  // 文件名带完整目录
       scale = 1; tx = 0; ty = 0; applyTransform();
@@ -464,18 +495,20 @@ def build_gallery_html(dir_name: str, photos: list) -> str:
     // 加载成功才切换画面，失败则保留缩略图（不破图）并提示格式不支持。
     function loadView(onready) {{
       if (usingView) {{ onready && onready(); return; }}
-      const url = PHOTOS[cur].view;
+      const url = encodeURI(PHOTOS[cur].view || PHOTOS[cur].orig || "");
       if (!url) {{ onready && onready(); return; }}
       origLoading = true;
-      lbInfo.textContent = Math.round(scale * 100) + '% · 原图加载中…';
+      showLoading();   // 右下角「原图加载中…」提示（独立于 lb-info，不被缩放百分比覆盖）
       const loader = new Image();
       loader.onload = function () {{
         lbImg.src = url; usingView = true; origLoading = false; applyTransform();
+        hideLoading();
         onready && onready();
       }};
       loader.onerror = function () {{
         origLoading = false;
-        lbInfo.textContent = Math.round(scale * 100) + '% · 原图不可用（格式浏览器不支持）';
+        hideLoading();
+        if (lbInfo) lbInfo.textContent = Math.round(scale * 100) + '% · 原图加载失败';
       }};
       loader.src = url;
     }}
@@ -525,13 +558,14 @@ def build_gallery_html(dir_name: str, photos: list) -> str:
     }});
     function loadViewThenMenu(x, y) {{
       if (origLoading) {{ showMenu(x, y); return; }}
-      const url = PHOTOS[cur].view, name = PHOTOS[cur].name;
+      const url = encodeURI(PHOTOS[cur].view || PHOTOS[cur].orig || "");
+      const name = PHOTOS[cur].name;
       const loader = new Image();
-      showMenuLoading(x, y);
+      showLoading(); showMenuLoading(x, y);
       loader.onload = function () {{
-        lbImg.src = url; usingView = true; showMenu(x, y, name);
+        lbImg.src = url; usingView = true; hideLoading(); showMenu(x, y, name);
       }};
-      loader.onerror = function () {{ hideMenu(); }};
+      loader.onerror = function () {{ hideLoading(); hideMenu(); }};
       loader.src = url;
     }}
     function menuPos(x, y) {{
