@@ -26,6 +26,7 @@ const els = {
   browseNetHttp: $("#browseNetHttp"),
   healthBanner: $("#healthBanner"),
   faceSearch: $("#faceSearch"),
+  browseGallery: $("#browseGallery"),
 };
 
 // ---------- 前端事件上报 ----------
@@ -198,6 +199,17 @@ els.browseFtp.addEventListener("click", () => openBrowse(els.browseFtp, "/ftp/br
 els.browseNetFtp.addEventListener("click", () => openBrowse(els.browseNetFtp, "/ftp/browse"));
 els.browseShare.addEventListener("click", () => openBrowse(els.browseShare, els.shareUrl.dataset.val || els.shareUrl.textContent));
 els.browseNetHttp.addEventListener("click", () => openBrowse(els.browseNetHttp, els.netHttp.dataset.val || els.netHttp.textContent));
+
+// 浏览 Gallery：直接打开本服务已生成的画廊（gallery 挂在同服务的 /share/ 下，
+// 用当前 origin 打开，本地与远程设备均可访问，且不依赖「先生成才有」。
+if (els.browseGallery) {
+  els.browseGallery.addEventListener("click", () => {
+    const url = window.location.origin + "/share/gallery.html";
+    reportEvent("用户点击浏览 Gallery：" + url);
+    const w = window.open(url, "_blank");
+    if (!w) window.location.href = url;
+  });
+}
 
 // ---------- WebUI 下方常驻展示局域网共享地址（FTP / HTTP） ----------
 async function loadNetLinks() {

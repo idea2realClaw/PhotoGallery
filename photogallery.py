@@ -325,7 +325,8 @@ def build_gallery_html(dir_name: str, photos: list) -> str:
     # name=相对文件名(下载用)，full=含完整目录的绝对路径(展示用)；转义 </ 防止提前闭合 script
     photos_payload = [{"src": p["orig"], "view": p.get("view", p["orig"]),
                        "thumb": p["thumb"], "name": p["name"] or "",
-                       "full": p.get("full", p["name"] or "")} for p in photos]
+                       "full": p.get("full", p["name"] or ""),
+                       "mtime": p.get("mtime", 0)} for p in photos]
     photos_json = json.dumps(photos_payload, ensure_ascii=False).replace("</", "<\\/")
 
     html = f"""<!DOCTYPE html>
@@ -409,12 +410,14 @@ def build_gallery_html(dir_name: str, photos: list) -> str:
   <header>
     <div class="title">PhotoGallery<small>{dir_name} · {len(photos)} 张照片</small></div>
     <div style="display:flex; gap:10px; align-items:center;">
+      <button type="button" id="sortDateBtn" class="home-btn" style="background:#fff; color:#3b6cff; border-color:#3b6cff;">📅 按文件日期</button>
+      <button type="button" id="sortNameBtn" class="home-btn" style="background:#fff; color:#3b6cff; border-color:#3b6cff;">🔤 按文件名</button>
       <a class="home-btn" id="faceSearchBtn" href="{HOME_URL}faces" style="background:#fff; color:#3b6cff; border-color:#3b6cff;">🧑 人脸寻找</a>
       <a class="home-btn" id="homeBtn" href="{HOME_URL}">← 返回主页</a>
     </div>
   </header>
   <main>
-    <p class="gridhint">点击下方任意缩略图可查看（先看缩略图，放大时才加载原图；右键先加载原图再弹「下载原图」菜单；← → 切换、Esc 关闭；文件名含完整目录路径）。</p>
+    <p class="gridhint">点击下方任意缩略图可查看（先看缩略图，放大时才加载原图；右键先加载原图再弹「下载原图」菜单；← → 切换、Esc 关闭；文件名含完整目录路径）；顶部可按「文件日期 / 文件名」排序。</p>
     <div class="grid">
 {grid}
     </div>
@@ -520,6 +523,50 @@ def build_gallery_html(dir_name: str, photos: list) -> str:
         openLB(idx);
       }});
     }});
+    // ---- 画廊排序：按文件日期 / 按文件名（按钮在 header，人脸寻找左侧）----
+    const gridEl = document.querySelector('.grid');
+    const sortDateBtn = document.getElementById('sortDateBtn');
+    const sortNameBtn = document.getElementById('sortNameBtn');
+    let sortKey = null, sortDir = 1;
+    function renderGrid() {{
+      if (!gridEl) return;
+      gridEl.innerHTML = '';
+      PHOTOS.forEach(function (p, i) {{
+        const safe = (p.name || '').replace(/"/g, '&quot;');
+        const fig = document.createElement('figure');
+        fig.className = 'cell';
+        const btn = document.createElement('button');
+        btn.type = 'button'; btn.className = 'thumb'; btn.dataset.index = i;
+        btn.setAttribute('aria-label', '查看 ' + safe);
+        const img = document.createElement('img');
+        img.loading = 'lazy'; img.src = p.thumb; img.alt = safe;
+        btn.appendChild(img);
+        const cap = document.createElement('figcaption');
+        cap.textContent = safe;
+        fig.appendChild(btn); fig.appendChild(cap);
+        btn.addEventListener('click', function () {{ openLB(i); }});
+        gridEl.appendChild(fig);
+      }});
+    }}
+    function applySort(key) {{
+      if (sortKey === key) sortDir = -sortDir; else {{ sortKey = key; sortDir = 1; }}
+      PHOTOS.sort(function (a, b) {{
+        let r = 0;
+        if (key === 'date') {{
+          r = (a.mtime || 0) - (b.mtime || 0);
+          if (r === 0) r = (a.name || '').localeCompare(b.name || '', 'zh');
+        }} else {{
+          r = (a.name || '').localeCompare(b.name || '', 'zh');
+        }}
+        return r * sortDir;
+      }});
+      renderGrid();
+      if (sortDateBtn) sortDateBtn.style.fontWeight = (sortKey === 'date') ? '700' : '';
+      if (sortNameBtn) sortNameBtn.style.fontWeight = (sortKey === 'name') ? '700' : '';
+    }}
+    if (sortDateBtn) sortDateBtn.addEventListener('click', function () {{ applySort('date'); reportEvent('画廊按文件日期排序'); }});
+    if (sortNameBtn) sortNameBtn.addEventListener('click', function () {{ applySort('name'); reportEvent('画廊按文件名排序'); }});
+
     document.getElementById('lbClose').addEventListener('click', closeLB);
     document.getElementById('lbPrev').addEventListener('click', function (e) {{
       e.stopPropagation(); const n = PHOTOS.length; const p = PHOTOS[((cur - 1) % n + n) % n];
@@ -851,7 +898,8 @@ def generate():
                 orig = rel
             view = orig if native else "thumbs/" + view_filename(rel)
             return ("ok", {"name": rel, "thumb": "thumbs/" + tname,
-                           "orig": orig, "view": view, "full": str(img_path)})
+                           "orig": orig, "view": view, "full": str(img_path),
+                           "mtime": int(img_path.stat().st_mtime)})
 
         max_workers = min(8, (os.cpu_count() or 4) + 2)
         with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as ex:
