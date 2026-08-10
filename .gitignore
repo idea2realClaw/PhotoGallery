@@ -20,6 +20,8 @@ gallery.html
 ftp_share/
 # 最近扫描目录记忆（含本机绝对路径，机器相关，禁止上传）
 fold.json
+# 画廊持久化状态（含本机绝对路径，机器相关，禁止上传；用于重启后自动加载画廊）
+gallery_state.json
 # 人脸索引：含生物特征与人脸裁剪图（由源照片生成，禁止上传）
 faces/
 faces.json

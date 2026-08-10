@@ -36,6 +36,7 @@ import queue
 import logging
 import socket
 import threading
+import time
 import webbrowser
 import ftplib
 import zipfile
@@ -70,6 +71,7 @@ GALLERY_FILE = BASE_DIR / "gallery.html"        # 默认生成位置（无法写
 THUMBS_DIR = BASE_DIR / "thumbs"                 # 缩略图目录（回退模式用）
 GALLERY_ASSETS_DIR = BASE_DIR / "gallery_assets"  # 上传/无写权限时的回退工作目录
 FOLD_JSON = BASE_DIR / "fold.json"               # 记住最近扫描的目录，供下次启动/刷新 WebUI 预填
+GALLERY_STATE_FILE = BASE_DIR / "gallery_state.json"  # 记录最近一次成功生成的画廊位置，供重启后自动加载
 HOME_URL = "http://127.0.0.1:2026/"
 
 # ---- 人脸索引相关配置 ----
@@ -169,6 +171,59 @@ def load_last_folder() -> str:
     except Exception:
         pass
     return ""
+
+
+# --------------------------------------------------------------------------- #
+# 画廊状态的持久化与启动自动加载
+# --------------------------------------------------------------------------- #
+def save_gallery_state(shared_dir: Path, source_dir: str, name: str, count: int) -> None:
+    """记录最近一次成功生成的画廊（共享目录 + 来源目录 + 名称 + 张数），供重启后自动加载。"""
+    try:
+        GALLERY_STATE_FILE.write_text(
+            json.dumps({
+                "shared_dir": str(shared_dir),
+                "source_dir": source_dir or "",
+                "name": name or "",
+                "count": int(count),
+                "generated_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+            }, ensure_ascii=False),
+            encoding="utf-8",
+        )
+        log.info("BACKEND: 已记录画廊状态：%s（%d 张）", shared_dir, count)
+    except Exception as exc:
+        log.warning("BACKEND: 写入画廊状态失败：%s", exc)
+
+
+def load_gallery_state() -> dict | None:
+    """读取画廊状态；文件不存在/损坏/缺字段则返回 None。"""
+    try:
+        if GALLERY_STATE_FILE.exists():
+            data = json.loads(GALLERY_STATE_FILE.read_text(encoding="utf-8"))
+            if isinstance(data, dict) and data.get("shared_dir"):
+                return data
+    except Exception:
+        return None
+    return None
+
+
+def restore_gallery_on_startup() -> None:
+    """启动时若上次已生成画廊且文件仍在，自动恢复共享目录，使 /share/gallery.html 立即可用。
+
+    这样重启后台无需重新扫描/生成：只要有历史画廊且目录/文件仍在，就直接把它重新设为
+    共享目录（SHARED_DIR），前端『浏览 Gallery』按钮也随之可用。
+    """
+    global SHARED_DIR
+    st = load_gallery_state()
+    if not st:
+        log.info("BACKEND: 未发现历史画廊记录，等待用户通过 WebUI 生成画廊。")
+        return
+    shared = Path(st["shared_dir"])
+    gallery_file = shared / "gallery.html"
+    if shared.exists() and gallery_file.exists():
+        update_ftp_share(shared)
+        log.info("BACKEND: 已自动加载历史画廊：%s（%d 张，%s）", shared, st.get("count", 0), st.get("name", ""))
+    else:
+        log.info("BACKEND: 历史画廊记录存在但目录/文件已缺失（%s），将等待用户重新生成。", shared)
 
 
 # --------------------------------------------------------------------------- #
@@ -945,6 +1000,8 @@ def generate():
     # 共享给网络其他客户：切换 FTP 共享目录，并记录 HTTP 共享地址
     share_dir = out_html.parent
     update_ftp_share(share_dir)
+    # 记录画廊状态，供下次启动自动加载（无需重新生成）
+    save_gallery_state(share_dir, raw_path, dir_name, len(photos))
 
     # 后台构建人脸索引（检测 + 聚类），不阻塞前台工作
     log.info("BACKEND: 准备后台构建人脸索引（照片数=%d，copy_mode=%s，share_dir=%s）", len(photos), copy_mode, share_dir)
@@ -995,6 +1052,24 @@ def info():
     """返回本机局域网 IP 与共享端口，供前端在 WebUI 下方常驻展示共享链接。"""
     ip = LOCAL_IP or get_local_ip()
     return jsonify(ok=True, ip=ip, ftp_port=FTP_PORT, share_port=SHARE_HTTP_PORT)
+
+
+@app.route("/api/gallery-status")
+def gallery_status():
+    """返回当前是否已有可访问的画廊，供前端启用/禁用『浏览 Gallery』按钮。
+
+    只要 SHARED_DIR 已设置且其中存在 gallery.html（含启动自动加载的历史画廊），即视为存在。
+    """
+    if SHARED_DIR is None:
+        return jsonify(ok=True, exists=False)
+    gallery_file = SHARED_DIR / "gallery.html"
+    if gallery_file.exists():
+        st = load_gallery_state() or {}
+        ip = LOCAL_IP or get_local_ip()
+        share_url = f"http://{ip}:{SHARE_HTTP_PORT}/share/gallery.html"
+        return jsonify(ok=True, exists=True, share_url=share_url,
+                       name=st.get("name", ""), count=st.get("count", 0))
+    return jsonify(ok=True, exists=False)
 
 
 @app.route("/api/last-folder")
@@ -2053,5 +2128,6 @@ if __name__ == "__main__":
     log.info("BACKEND: 本机局域网 IP：%s", LOCAL_IP)
     log.info("BACKEND: PhotoGallery 启动，监听端口 2026，首页 %s，人脸寻找页 http://127.0.0.1:2026/faces", HOME_URL)
     init_ftp_server()
+    restore_gallery_on_startup()   # 若上次已生成画廊且仍在，自动恢复共享目录，无需重新生成
     log.info("BACKEND: 等待用户通过 WebUI 选择目录 ...")
     app.run(host="0.0.0.0", port=2026, debug=False, threaded=True)

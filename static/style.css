@@ -48,6 +48,8 @@ main.home {
   transition: .15s;
 }
 .btn:hover { border-color: #c9cdd8; }
+.btn:disabled { background: #f2f3f5; color: #b3b8c2; border-color: #e3e6ec; cursor: not-allowed; opacity: .7; }
+.btn:disabled:hover { border-color: #e3e6ec; }
 .btn.primary { background: var(--primary); color: var(--primary-ink); border-color: var(--primary); }
 .btn.primary:hover { filter: brightness(1.05); }
 .btn.big { font-size: 17px; padding: 14px 30px; border-radius: 12px; }

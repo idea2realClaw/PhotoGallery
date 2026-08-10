@@ -59,6 +59,7 @@ async function checkHealth() {
     els.scanBtn.disabled = !ok;
     els.scanBtn.title = ok ? "" : "后台未连接，请先运行启动器（start.command / python photogallery.py）并刷新页面";
   }
+  if (ok) loadGalleryStatus(); // 后台恢复后刷新「浏览 Gallery」按钮可用性
   return ok;
 }
 
@@ -116,6 +117,7 @@ async function scanByPath(path) {
       els.status.textContent = `✅ 已生成 gallery.html（${data.count} 张），正在后台建立人脸索引…`;
       reportEvent(`后台扫描完成：${data.count} 张照片，已自动打开 gallery.html`);
       showShare(data);
+      loadGalleryStatus(); // 生成后立即可用「浏览 Gallery」按钮
       pollFaceStatus(); // 继续追踪人脸索引进度：状态文案 + 前端日志同步更新
     } else {
       els.status.textContent = "❌ " + (data.error || "扫描失败");
@@ -246,6 +248,21 @@ async function loadLastFolder() {
   } catch (_) { /* 获取失败不影响主流程 */ }
 }
 
+// ---------- 画廊状态：决定「浏览 Gallery」按钮是否可用 ----------
+function setBrowseGalleryEnabled(enabled) {
+  if (!els.browseGallery) return;
+  els.browseGallery.disabled = !enabled;
+  els.browseGallery.title = enabled ? "" : "尚未生成画廊，请先扫描并生成";
+}
+// 向后台询问当前是否已有可访问的画廊，据此启用/禁用按钮
+async function loadGalleryStatus() {
+  try {
+    const res = await fetch("/api/gallery-status", { cache: "no-store" });
+    const d = await res.json();
+    setBrowseGalleryEnabled(!!(d && d.ok && d.exists));
+  } catch (_) { /* 失败则保持默认禁用，避免误点 */ }
+}
+
 // ---------- 日志面板折叠（缺省折叠，localStorage 记忆） ----------
 const LOG_FOLD_KEY = "pg_log_collapsed";
 function applyLogFold(collapsed) {
@@ -269,6 +286,7 @@ reportEvent("WebUI 首页已加载");
 connectLog();
 loadNetLinks();
 loadLastFolder();
+loadGalleryStatus();           // 页面加载即询问是否已存在画廊，决定按钮可用性
 checkHealth();                 // 页面加载即探活，后台没起立刻提示
 setInterval(checkHealth, 15000); // 每 15 秒复查后台连通性
 // 人脸寻找：尝试新标签打开，被拦截（沙箱/弹窗拦截器）则当前标签兜底
