@@ -1777,9 +1777,14 @@ def faces_person(pid):
                   'if(j.ok){document.querySelectorAll(".set-cover").forEach(function(b){b.textContent="设为封面";});'
                   'btn.textContent="已设封面";}else{btn.textContent="设置失败";}});});});</script>')
         html = html.replace("</body>", script + "</body>", 1)
-    # 把画廊页的「返回主页」改成「返回人脸」（HOME_URL 在 build_gallery_html 中已被替换为真实地址）
-    html = html.replace(f'class="home-btn" href="{HOME_URL}"', 'class="home-btn" href="/faces"')
-    html = html.replace("← 返回主页", "← 返回人脸")
+    # 人物页：把「返回主页」改成「返回 Gallery」，链接用本机局域网 IP（而非 127.0.0.1），
+    # 确保远程设备点击也能正确回到 Gallery。JS 对 /faces/ 路径的 homeBtn 不覆盖，IP 地址原样保留。
+    gallery_url = f"http://{LOCAL_IP or get_local_ip()}:{SHARE_HTTP_PORT}/share/gallery.html"
+    # 注意：build_gallery_html 已把 {HOME_URL} 替换为真实地址，且 homeBtn 带 id="homeBtn"，
+    # 故匹配串须包含 id 并使用 HOME_URL 实际取值，否则替换不生效。
+    html = html.replace(f'class="home-btn" id="homeBtn" href="{HOME_URL}"',
+                        f'class="home-btn" id="homeBtn" href="{gallery_url}"')
+    html = html.replace("← 返回主页", "← 返回 Gallery")
     return html
 
 
